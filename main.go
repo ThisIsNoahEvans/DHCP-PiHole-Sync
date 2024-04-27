@@ -31,8 +31,8 @@ func getCookie(header http.Header, key string) string {
 
 
 // get the auth token
-func getToken(PHPSESSID string) (string, error) {
-	url := "http://10.45.1.2/admin/index.php"
+func getToken(PHPSESSID string, serverIP string) (string, error) {
+	url := "http://" + serverIP + "/admin/index.php"
 	method := "GET"
 
 	client := &http.Client{}
@@ -48,7 +48,7 @@ func getToken(PHPSESSID string) (string, error) {
 	req.Header.Add("Connection", "keep-alive")
 	req.Header.Add("Cookie", "PHPSESSID="+PHPSESSID)
 	req.Header.Add("DNT", "1")
-	req.Header.Add("Referer", "http://10.45.1.2/admin/login.php")
+	req.Header.Add("Referer", "http://" + serverIP + "/admin/login.php")
 	req.Header.Add("Upgrade-Insecure-Requests", "1")
 	req.Header.Add("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 
@@ -91,11 +91,11 @@ func getToken(PHPSESSID string) (string, error) {
 	return token, nil
 }
 
-func test2() {
-	url := "http://10.45.1.2/admin/login.php"
+func authenticate(serverIP string, password string) (string, string, error) {
+	url := "http://" + serverIP + "/admin/login.php"
 	method := "POST"
 
-	payload := strings.NewReader("pw=f26WR9aDKy")
+	payload := strings.NewReader("pw=" + password)
 
 	client := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -107,43 +107,52 @@ func test2() {
 
 	if err != nil {
 		fmt.Println(err)
-		return
+		return "", "", err
 	}
+
 	req.Header.Add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
 	req.Header.Add("Accept-Language", "en-GB,en-US;q=0.9,en;q=0.8")
 	req.Header.Add("Cache-Control", "max-age=0")
 	req.Header.Add("Connection", "keep-alive")
 	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Add("DNT", "1")
-	req.Header.Add("Origin", "http://10.45.1.2")
-	req.Header.Add("Referer", "http://10.45.1.2/admin/login.php")
+	req.Header.Add("Origin", "http://" + serverIP)
+	req.Header.Add("Referer", "http://" + serverIP + "/admin/login.php")
 	req.Header.Add("Upgrade-Insecure-Requests", "1")
 	req.Header.Add("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 
 	res, err := client.Do(req)
 	if err != nil {
 		fmt.Println(err)
-		return
+		return "", "", err
 	}
 	defer res.Body.Close()
 
 	// get the PHPSESSID cookie
 	PHPSESSID := getCookie(res.Header, "PHPSESSID")
 	if PHPSESSID == "" {
-		return
+		return "", "", errors.New("PHPSESSID not found in response")
 	}
 
-	fmt.Println("GOT PHPSESSID ::: ", PHPSESSID)
+	token, err := getToken(PHPSESSID, serverIP)
+	if err != nil {
+		fmt.Println(err)
+		return "", "", err
+	}
 
-	token, err := getToken(PHPSESSID)
+	return PHPSESSID, token, nil
+}
+
+func main() {
+	serverIP := "10.45.1.2"
+	password := "f26WR9aDKy"
+
+	PHPSESSID, token, err := authenticate(serverIP, password)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 
+	fmt.Println("GOT PHPSESSID ::: ", PHPSESSID)
 	fmt.Println("GOT TOKEN ::: ", token)
-}
-
-func main() {
-	test2()
 }
