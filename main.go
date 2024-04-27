@@ -245,7 +245,38 @@ func test() error {
 		return errors.New("PHPSESSID value not set")
 	}
 
-	fmt.Println(phpsessidValue)
+	fmt.Println("Session ID:", phpsessidValue)
+
+	body, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+
+	bodyStr := string(body)
+
+	// Find the start index of the token div
+	tokenStart := strings.Index(bodyStr, "<div id=\"token\" hidden>")
+	if tokenStart == -1 {
+		return errors.New("token not found")
+	}
+
+	// Correct the start index to the beginning of the actual token
+	tokenStartCorrected := tokenStart + len("<div id=\"token\" hidden>")
+
+	// Find the end index of the token div
+	tokenEnd := strings.Index(bodyStr[tokenStartCorrected:], "</div>")
+	if tokenEnd == -1 {
+		return errors.New("token not found")
+	}
+
+	// Correct the token end index relative to the entire body
+	tokenEndCorrected := tokenStartCorrected + tokenEnd
+
+	// Extract the token
+	token := bodyStr[tokenStartCorrected:tokenEndCorrected]
+	
+	fmt.Println("Auth token:", token)
 
 	return nil
 }
