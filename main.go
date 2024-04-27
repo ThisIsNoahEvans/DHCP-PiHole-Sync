@@ -531,6 +531,7 @@ func findClientID(hostname string, ip string, serverIP string, PHPSESSID string,
 	return "", nil, "", nil
 }
 
+// Toggle the groups of a client, blocking or unblocking
 func toggleBlock(hostname string, ip string, serverIP string, PHPSESSID string, token string) error {
 	fmt.Println("!!!!!!! Toggling block for", hostname, ip)
 
