@@ -379,7 +379,7 @@ func parseStaticHosts(filePath string) ([]Device, error) {
 func sync() (string, string, string, error) {
 
 	serverIP := "10.45.1.2"
-	password := "f26WR9aDKy"
+	password := "PASSWORD"
 
 	PHPSESSID, token, err := authenticate(serverIP, password)
 	if err != nil {
