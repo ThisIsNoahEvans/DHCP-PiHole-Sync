@@ -5,13 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 )
 
 // Device represents a DHCP static lease with a hostname and an IP address.
@@ -324,7 +326,7 @@ func sync() (string, string, string, error) {
 }
 
 // Find a Pi-hole client ID by hostname and IP address
-func findClientID(hostname string, ip string, serverIP string, PHPSESSID string, token string) (string, error) {
+func findClientID(hostname string, ip string, serverIP string, PHPSESSID string, token string) (string, []int, string, error) {
 	url := "http://" + serverIP + "/admin/scripts/pi-hole/php/groups.php"
 	method := "POST"
 
@@ -335,7 +337,7 @@ func findClientID(hostname string, ip string, serverIP string, PHPSESSID string,
 
 	if err != nil {
 		fmt.Println(err)
-		return "", err
+		return "", nil, "", err
 	}
 	req.Header.Add("Accept", "application/json, text/javascript, */*; q=0.01")
 	req.Header.Add("Accept-Language", "en-GB,en-US;q=0.9,en;q=0.8")
@@ -351,14 +353,14 @@ func findClientID(hostname string, ip string, serverIP string, PHPSESSID string,
 	res, err := client.Do(req)
 	if err != nil {
 		fmt.Println(err)
-		return "", err
+		return "", nil, "", err
 	}
 	defer res.Body.Close()
 
 	body, err := ioutil.ReadAll(res.Body)
 	if err != nil {
 		fmt.Println(err)
-		return "", err
+		return "", nil, "", err
 	}
 
 	// body is json - clients under data
@@ -366,7 +368,7 @@ func findClientID(hostname string, ip string, serverIP string, PHPSESSID string,
 	err = json.Unmarshal(body, &jsonResponse)
 	if err != nil {
 		fmt.Println(err)
-		return "", errors.New("failed to parse response")
+		return "", nil, "", errors.New("failed to parse response")
 	}
 
 	if data, ok := jsonResponse["data"].([]interface{}); ok {
@@ -388,31 +390,109 @@ func findClientID(hostname string, ip string, serverIP string, PHPSESSID string,
 				clientIP = ip
 			}
 
+			// get the groups the client is in
+			groups := clientMap["groups"].([]interface{})
+			var groupIDs []int
+			for _, group := range groups {
+				groupStr := fmt.Sprintf("%v", group)   // Convert group to string if not already
+				groupID, err := strconv.Atoi(groupStr) // Convert string to int
+				if err != nil {
+					log.Printf("Error converting group ID to integer: %s", err)
+					continue // Skip this group if conversion fails
+				}
+				groupIDs = append(groupIDs, groupID) // Append the converted integer
+			}
+
 			// find the client by hostname and IP address
 			if hostname == clientComment && ip == clientIP {
-				fmt.Println("Found client:", clientID)
-				return clientID, nil
+				return clientID, groupIDs, clientComment, nil
 			}
 		}
 	} else {
 		fmt.Println("Error: data field is not an array")
-		return "", errors.New("data field is not an array")
+		return "", nil, "", errors.New("data field is not an array")
 	}
 
-	return "", nil
+	return "", nil, "", nil
 }
 
 func toggleBlock(hostname string, ip string, serverIP string, PHPSESSID string, token string) {
 	fmt.Println("!!!!!!! Toggling block for", hostname, ip)
 
 	// find the client by hostname and IP address
-	clientID, err := findClientID(hostname, ip, serverIP, PHPSESSID, token)
+	clientID, groups, comment, err := findClientID(hostname, ip, serverIP, PHPSESSID, token)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 
 	fmt.Println("Found Client ID:", clientID)
+
+	// group 0 - default, with block
+	// group 1 - no block
+
+	// switch the group
+	for _, groupID := range groups {
+		if groupID == 0 {
+			fmt.Println("Switching to group 1")
+			err = switchGroup(clientID, 1, comment, serverIP, PHPSESSID, token)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+			break
+		} else if groupID == 1 {
+			fmt.Println("Switching to group 0")
+			err = switchGroup(clientID, 0, comment, serverIP, PHPSESSID, token)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+			break
+		}
+	}
+}
+
+func switchGroup(clientID string, groupID int, clientComment string, serverIP string, PHPSESSID string, token string) error {
+	url := "http://" + serverIP + "/admin/scripts/pi-hole/php/groups.php"
+	method := "POST"
+
+	payload := strings.NewReader(`action=edit_client&id=` + clientID + `&groups%5B%5D=` + strconv.Itoa(groupID) + `&token=` + token + `&comment=` + clientComment)
+
+	client := &http.Client{}
+	req, err := http.NewRequest(method, url, payload)
+
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+	req.Header.Add("Accept", "application/json, text/javascript, */*; q=0.01")
+	req.Header.Add("Accept-Language", "en-GB,en-US;q=0.9,en;q=0.8")
+	req.Header.Add("Connection", "keep-alive")
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+	req.Header.Add("Cookie", "PHPSESSID="+PHPSESSID + "; PHPSESSID="+PHPSESSID)
+	req.Header.Add("DNT", "1")
+	req.Header.Add("Origin", "http://"+serverIP)
+	req.Header.Add("Referer", "http://"+serverIP+"/admin/groups-clients.php")
+	req.Header.Add("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+	req.Header.Add("X-Requested-With", "XMLHttpRequest")
+
+	res, err := client.Do(req)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+	defer res.Body.Close()
+
+	body, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+	
+	fmt.Println(string(body))
+
+	return nil
 }
 
 func main() {
@@ -454,7 +534,6 @@ func main() {
 	for update := range updates {
 		fmt.Println("update:", update.CallbackQuery)
 
-		
 		if update.CallbackQuery != nil { // Check if there is a callback query
 			callbackData := update.CallbackQuery.Data
 			fmt.Println("callback data:", callbackData)
