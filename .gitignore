@@ -22,3 +22,6 @@ go.work
 
 # Binary
 dhcp-pihole-sync
+
+# Example Config
+dhcpd.conf

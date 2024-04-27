@@ -1,15 +1,15 @@
 package main
 
 import (
+	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
-
 	"io/ioutil"
-
-	"encoding/json"
 	"net/http"
+	"os"
 	"strings"
+//	"time"
 )
 
 // get a cookie from a header
@@ -213,48 +213,101 @@ func createClient(serverIP string, clientIP string, description string, PHPSESSI
 	return nil
 }
 
-func main() {
-	serverIP := "10.45.1.2"
-	password := "f26WR9aDKy"
-
-	PHPSESSID, token, err := authenticate(serverIP, password)
+func parseStaticHosts(filePath string) error {
+	file, err := os.Open(filePath)
 	if err != nil {
-		fmt.Println(err)
-		return
+		return fmt.Errorf("failed to open file: %v", err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		line = strings.TrimSpace(line)
+
+		if strings.HasPrefix(line, "host") && strings.HasSuffix(line, "}") {
+			// Process the line containing host details
+			fields := strings.Fields(line)
+			if len(fields) < 6 {
+				continue // Not enough information
+			}
+
+			hostname := strings.Trim(fields[1], "{ ")
+			mac := ""
+			ip := ""
+
+			// Loop through fields to find MAC and IP
+			for i := 0; i < len(fields); i++ {
+				if fields[i] == "hardware" && i+2 < len(fields) {
+					mac = strings.Trim(fields[i+2], ";")
+				}
+				if fields[i] == "fixed-address" && i+1 < len(fields) {
+					ip = strings.Trim(fields[i+1], ";")
+				}
+			}
+
+			if mac != "" && ip != "" {
+				fmt.Printf("Host: %s, MAC: %s, IP: %s\n", hostname, mac, ip)
+			}
+		}
 	}
 
-	// add a client
-	maxRetries := 5
-	retryCount := 0
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("failed to read file: %v", err)
+	}
 
-	for retryCount < maxRetries {
-		err := createClient(serverIP, "192.168.1.99", "TEST FROM GO", PHPSESSID, token)
+	return nil
+}
+
+func main() {
+
+	filePath := "dhcpd.conf" // specify the path to your dhcpd.conf file
+	if err := parseStaticHosts(filePath); err != nil {
+		fmt.Println("Error:", err)
+	}
+
+	/*
+		serverIP := "10.45.1.2"
+		password := "f26WR9aDKy"
+
+		PHPSESSID, token, err := authenticate(serverIP, password)
 		if err != nil {
-			if err.Error() == "token error, try again" {
-				fmt.Println("Retry due to token error:", retryCount+1)
-				retryCount++
+			fmt.Println(err)
+			return
+		}
 
-				// wait for a second * retryCount
-				time.Sleep(time.Duration(retryCount) * time.Second)
-				// reauthenticate
-				PHPSESSID, token, err = authenticate(serverIP, password)
-				if err != nil {
+		// add a client
+		maxRetries := 5
+		retryCount := 0
+
+		for retryCount < maxRetries {
+			err := createClient(serverIP, "10.69.69.69", "boop", PHPSESSID, token)
+			if err != nil {
+				if err.Error() == "token error, try again" {
+					fmt.Println("Retry due to token error:", retryCount+1)
+					retryCount++
+
+					// wait for a second * retryCount
+					time.Sleep(time.Duration(retryCount) * time.Second)
+					// reauthenticate
+					PHPSESSID, token, err = authenticate(serverIP, password)
+					if err != nil {
+						fmt.Println("Error:", err)
+						break
+					}
+
+					continue
+				} else {
 					fmt.Println("Error:", err)
 					break
 				}
-				
-				continue
-			} else {
-				fmt.Println("Error:", err)
-				break
 			}
+			fmt.Println("Success on attempt", retryCount+1)
+			break
 		}
-		fmt.Println("Success on attempt", retryCount+1)
-		break
-	}
 
-	if retryCount == maxRetries {
-		fmt.Println("Failed after", maxRetries, "attempts")
-	}
+		if retryCount == maxRetries {
+			fmt.Println("Failed after", maxRetries, "attempts")
+		} */
 
 }
