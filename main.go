@@ -276,10 +276,6 @@ func updateClient(clientID string, groups []int, comment string, serverIP string
 	finalPayload := payload.String()
 	reader := strings.NewReader(finalPayload)
 
-	// print the payload
-	fmt.Println("EDIT PAYLOAD::::::::::::::::::::::::::::::::")
-	fmt.Println(finalPayload)
-
 	// for each group, add a &groups[]= parameter
 	for _, group := range groups {
 		payload.WriteString("&groups%5B%5D=" + strconv.Itoa(group))
@@ -539,7 +535,7 @@ func toggleBlock(hostname string, ip string, serverIP string, PHPSESSID string, 
 	fmt.Println("!!!!!!! Toggling block for", hostname, ip)
 
 	// find the client by hostname and IP address
-	clientID, groups, comment, err := findClientID(hostname, ip, serverIP, PHPSESSID, token)
+	clientID, currentGroups, comment, err := findClientID(hostname, ip, serverIP, PHPSESSID, token)
 	if err != nil {
 		fmt.Println(err)
 		return err
@@ -547,87 +543,41 @@ func toggleBlock(hostname string, ip string, serverIP string, PHPSESSID string, 
 
 	fmt.Println("Found Client ID:", clientID)
 
-	// group 0 - default, with block
-	// group 1 - no block
+	// Determine if the client is in group 0 or 1 and toggle accordingly
+	var newGroups []int
+	inGroup0 := false
+	inGroup1 := false
 
-	// switch the group
-	for _, groupID := range groups {
-		if groupID == 0 {
-			fmt.Println("Switching to group 1")
-			err = switchGroup(clientID, 1, comment, serverIP, PHPSESSID, token)
-			if err != nil {
-				fmt.Println(err)
-				return err
-			}
-			break
-		} else if groupID == 1 {
-			fmt.Println("Switching to group 0")
-			err = switchGroup(clientID, 0, comment, serverIP, PHPSESSID, token)
-			if err != nil {
-				fmt.Println(err)
-				return err
-			}
-			break
+	// Check if the client is in group 0 or 1 and prepare new list excluding 0 and 1
+	for _, group := range currentGroups {
+		if group == 0 {
+			inGroup0 = true
+		} else if group == 1 {
+			inGroup1 = true
+		} else {
+			newGroups = append(newGroups, group)
 		}
 	}
 
-	return nil
-}
-
-func switchGroup(clientID string, groupID int, clientComment string, serverIP string, PHPSESSID string, token string) error {
-	url := "http://" + serverIP + "/admin/scripts/pi-hole/php/groups.php"
-	method := "POST"
-
-	payload := strings.NewReader(`action=edit_client&id=` + clientID + `&groups%5B%5D=` + strconv.Itoa(groupID) + `&token=` + token + `&comment=` + clientComment)
-
-	client := &http.Client{}
-	req, err := http.NewRequest(method, url, payload)
-
-	if err != nil {
-		fmt.Println(err)
-		return err
-	}
-	req.Header.Add("Accept", "application/json, text/javascript, */*; q=0.01")
-	req.Header.Add("Accept-Language", "en-GB,en-US;q=0.9,en;q=0.8")
-	req.Header.Add("Connection", "keep-alive")
-	req.Header.Add("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-	req.Header.Add("Cookie", "PHPSESSID="+PHPSESSID+"; PHPSESSID="+PHPSESSID)
-	req.Header.Add("DNT", "1")
-	req.Header.Add("Origin", "http://"+serverIP)
-	req.Header.Add("Referer", "http://"+serverIP+"/admin/groups-clients.php")
-	req.Header.Add("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
-	req.Header.Add("X-Requested-With", "XMLHttpRequest")
-
-	res, err := client.Do(req)
-	if err != nil {
-		fmt.Println(err)
-		return err
-	}
-	defer res.Body.Close()
-
-	body, err := ioutil.ReadAll(res.Body)
-	if err != nil {
-		fmt.Println(err)
-		return err
+	// Toggle the group
+	if inGroup0 {
+		fmt.Println("Switching from group 0 to group 1")
+		newGroups = append(newGroups, 1)
+	} else if inGroup1 {
+		fmt.Println("Switching from group 1 to group 0")
+		newGroups = append(newGroups, 0)
 	}
 
-	// {"success":true,"message":null}
-	// check for success
-	var jsonResponse map[string]interface{}
-	err = json.Unmarshal(body, &jsonResponse)
-	if err != nil {
-		fmt.Println(err)
-		return err
+	// If neither group 0 nor 1 was found, decide on the default behavior
+	if !inGroup0 && !inGroup1 {
+		fmt.Println("Client is not in group 0 or 1, adding to group 0 by default")
+		newGroups = append(newGroups, 0)
 	}
 
-	success := jsonResponse["success"].(bool)
-	if !success {
-		fmt.Println("failed to add client")
-		fmt.Println(jsonResponse["message"])
-		return errors.New("failed to switch group")
-	}
+	fmt.Println("New groups:", newGroups)
 
-	return nil
+	// Update the client with the new group settings
+	return updateClient(clientID, newGroups, comment, serverIP, PHPSESSID, token)
 }
 
 func main() {
