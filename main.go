@@ -9,8 +9,15 @@ import (
 	"net/http"
 	"os"
 	"strings"
-//	"time"
+	"time"
+	// "time"
 )
+
+// Device represents a DHCP static lease with a hostname and an IP address.
+type Device struct {
+	Hostname string
+	IP       string
+}
 
 // get a cookie from a header
 func getCookie(header http.Header, key string) string {
@@ -213,13 +220,14 @@ func createClient(serverIP string, clientIP string, description string, PHPSESSI
 	return nil
 }
 
-func parseStaticHosts(filePath string) error {
+func parseStaticHosts(filePath string) ([]Device, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return fmt.Errorf("failed to open file: %v", err)
+		return nil, fmt.Errorf("failed to open file: %v", err)
 	}
 	defer file.Close()
 
+	var devices []Device
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -233,55 +241,56 @@ func parseStaticHosts(filePath string) error {
 			}
 
 			hostname := strings.Trim(fields[1], "{ ")
-			mac := ""
 			ip := ""
 
-			// Loop through fields to find MAC and IP
+			// Loop through fields to find IP
 			for i := 0; i < len(fields); i++ {
-				if fields[i] == "hardware" && i+2 < len(fields) {
-					mac = strings.Trim(fields[i+2], ";")
-				}
 				if fields[i] == "fixed-address" && i+1 < len(fields) {
 					ip = strings.Trim(fields[i+1], ";")
+					break
 				}
 			}
 
-			if mac != "" && ip != "" {
-				fmt.Printf("Host: %s, MAC: %s, IP: %s\n", hostname, mac, ip)
+			if hostname != "" && ip != "" {
+				devices = append(devices, Device{Hostname: hostname, IP: ip})
 			}
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("failed to read file: %v", err)
+		return nil, fmt.Errorf("failed to read file: %v", err)
 	}
 
-	return nil
+	return devices, nil
 }
 
 func main() {
 
-	filePath := "dhcpd.conf" // specify the path to your dhcpd.conf file
-	if err := parseStaticHosts(filePath); err != nil {
-		fmt.Println("Error:", err)
+	serverIP := "10.45.1.2"
+	password := "f26WR9aDKy"
+
+	PHPSESSID, token, err := authenticate(serverIP, password)
+	if err != nil {
+		fmt.Println(err)
+		return
 	}
 
-	/*
-		serverIP := "10.45.1.2"
-		password := "f26WR9aDKy"
+	filePath := "dhcpd.conf" // specify the path to your dhcpd.conf file
+	devices, err := parseStaticHosts(filePath)
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
 
-		PHPSESSID, token, err := authenticate(serverIP, password)
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
+	for _, device := range devices {
+		fmt.Printf("Adding %s with IP %s\n", device.Hostname, device.IP)
 
 		// add a client
 		maxRetries := 5
 		retryCount := 0
 
 		for retryCount < maxRetries {
-			err := createClient(serverIP, "10.69.69.69", "boop", PHPSESSID, token)
+			err := createClient(serverIP, device.IP, device.Hostname, PHPSESSID, token)
 			if err != nil {
 				if err.Error() == "token error, try again" {
 					fmt.Println("Retry due to token error:", retryCount+1)
@@ -308,6 +317,7 @@ func main() {
 
 		if retryCount == maxRetries {
 			fmt.Println("Failed after", maxRetries, "attempts")
-		} */
+		}
+	}
 
 }
