@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 )
@@ -634,7 +635,6 @@ func main() {
 		log.Panicf("Failed to read authorized user ID: %v", err)
 	}
 
-	// Use authorisedUser as needed in your program
 	log.Printf("Authorized user ID: %d", authorisedUser)
 
 	u := tgbotapi.NewUpdate(0)
@@ -654,6 +654,50 @@ func main() {
 		}
 
 		if update.CallbackQuery != nil { // Check if there is a callback query
+
+			// if it's a refresh button, send a new menu
+			if update.CallbackQuery.Data == "refresh" {
+				fmt.Println("Refresh button clicked")
+				sync()
+
+				devices, err := parseStaticHosts("dhcpd.conf")
+				if err != nil {
+					msg := tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("Error: %v", err))
+					bot.Send(msg)
+					continue
+				}
+
+				// Re-fetch devices or simply re-use if they are still valid
+				var rows [][]tgbotapi.InlineKeyboardButton
+				// sort devices by hostname
+				sort.Slice(devices, func(i, j int) bool {
+					return devices[i].Hostname < devices[j].Hostname
+				})
+				for _, device := range devices {
+					status := getBlockStatus(device.Hostname, device.IP, serverIP, PHPSESSID, token)
+					callbackData := fmt.Sprintf("Hostname: %s, IP: %s", device.Hostname, device.IP)
+					buttonText := fmt.Sprintf("%s (%s) - %s", device.Hostname, device.IP, status)
+					row := tgbotapi.NewInlineKeyboardRow(
+						tgbotapi.NewInlineKeyboardButtonData(buttonText, callbackData),
+					)
+					rows = append(rows, row)
+				}
+
+				// add a refresh button at the bottom
+				refreshButton := tgbotapi.NewInlineKeyboardButtonData("Refresh", "refresh")
+				rows = append(rows, tgbotapi.NewInlineKeyboardRow(refreshButton))
+
+				keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
+
+				// Update the message
+				editMsg := tgbotapi.NewEditMessageText(update.CallbackQuery.Message.Chat.ID, update.CallbackQuery.Message.MessageID, "Select a client:")
+				editMsg.ReplyMarkup = &keyboard
+				bot.Send(editMsg)
+
+				continue // skip further processing since we've handled the callback query
+
+			}
+
 			callbackData := update.CallbackQuery.Data
 			fmt.Println("callback data:", callbackData)
 
@@ -702,6 +746,11 @@ func main() {
 				)
 				rows = append(rows, row)
 			}
+
+			// add a refresh button at the bottom
+			refreshButton := tgbotapi.NewInlineKeyboardButtonData("Refresh", "refresh")
+			rows = append(rows, tgbotapi.NewInlineKeyboardRow(refreshButton))
+
 			keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
 
 			// Update the message
@@ -771,6 +820,11 @@ func main() {
 					)
 					rows = append(rows, row)
 				}
+
+				// add a refresh button at the bottom
+				refreshButton := tgbotapi.NewInlineKeyboardButtonData("Refresh", "refresh")
+				rows = append(rows, tgbotapi.NewInlineKeyboardRow(refreshButton))
+
 				keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
 				msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Select a client:")
 				msg.ReplyMarkup = keyboard
