@@ -159,12 +159,12 @@ func authenticate(serverIP string, password string) (string, string, error) {
 	return newPHPSESSID, token, nil
 }
 
-func createClient(serverIP string, clientIP string, description string, PHPSESSID string, token string) error {
+func createClient(serverIP string, clientIP string, fileComment string, PHPSESSID string, token string) error {
 	url := "http://" + serverIP + "/admin/scripts/pi-hole/php/groups.php"
 	method := "POST"
 
 	// add the params using string interpolation
-	payload := strings.NewReader(`action=add_client&ip=` + clientIP + `&comment=` + description + `&token=` + token)
+	payload := strings.NewReader(`action=add_client&ip=` + clientIP + `&comment=` + fileComment + `&token=` + token)
 
 	client := &http.Client{}
 	req, err := http.NewRequest(method, url, payload)
@@ -214,12 +214,124 @@ func createClient(serverIP string, clientIP string, description string, PHPSESSI
 
 	success := jsonResponse["success"].(bool)
 	if !success {
+		// if the message contains 'UNIQUE constraint failed: client.ip' then the client already exists
+		if strings.Contains(string(body), "UNIQUE constraint failed: client.ip") {
+			fmt.Println("Client already exists")
+
+			///// TODO: RENAME things. This is a mess
+			///// COMMENT is the one from pihole
+			///// DESCRIPTION is the one from the file
+
+			// ip is already added - check if the description (piholeComment) is the same with findClientID
+			clientID, groups, piholeComment, err := findClientID(fileComment, clientIP, serverIP, PHPSESSID, token)
+			if err != nil {
+				fmt.Println(err)
+				return err
+			}
+
+			if piholeComment != fileComment {
+				// hostname/comment/description is different - update
+				fmt.Println("Hostname/comment/description is different - updating client ID", clientID)
+				err = updateClient(clientID, groups, fileComment, serverIP, PHPSESSID, token)
+				if err != nil {
+					fmt.Println(err)
+					return err
+				}
+
+				// comment was updated - return success
+				return nil
+			} else {
+				// hostname/comment/description is the same - return success
+				return nil
+			}
+
+		}
+
+		// unknown error
 		fmt.Println("failed to add client")
 		fmt.Println(jsonResponse["message"])
 		return errors.New("failed to add client")
 	}
 
 	fmt.Println("client added!")
+
+	return nil
+}
+
+// Edit a client - all values must be passed, even if they are the same
+func updateClient(clientID string, groups []int, comment string, serverIP string, PHPSESSID string, token string) error {
+	apiURL := "http://" + serverIP + "/admin/scripts/pi-hole/php/groups.php"
+	method := "POST"
+
+	var payload strings.Builder
+
+	// Start by writing the initial part of the payload
+	payload.WriteString(`action=edit_client&id=` + clientID + `&token=` + token + `&comment=` + comment)
+
+	// For each group, add a &groups[]= parameter
+	for _, group := range groups {
+		payload.WriteString("&groups%5B%5D=" + strconv.Itoa(group))
+	}
+
+	finalPayload := payload.String()
+	reader := strings.NewReader(finalPayload)
+
+	// print the payload
+	fmt.Println("EDIT PAYLOAD::::::::::::::::::::::::::::::::")
+	fmt.Println(finalPayload)
+
+	// for each group, add a &groups[]= parameter
+	for _, group := range groups {
+		payload.WriteString("&groups%5B%5D=" + strconv.Itoa(group))
+	}
+	client := &http.Client{}
+	req, err := http.NewRequest(method, apiURL, reader)
+
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+
+	req.Header.Add("Accept", "application/json, text/javascript, */*; q=0.01")
+	req.Header.Add("Accept-Language", "en-GB,en-US;q=0.9,en;q=0.8")
+	req.Header.Add("Connection", "keep-alive")
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+	req.Header.Add("Cookie", "PHPSESSID="+PHPSESSID+"; PHPSESSID="+PHPSESSID)
+	req.Header.Add("DNT", "1")
+	req.Header.Add("Origin", "http://"+serverIP)
+	req.Header.Add("Referer", "http://"+serverIP+"/admin/groups-clients.php")
+	req.Header.Add("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+	req.Header.Add("X-Requested-With", "XMLHttpRequest")
+
+	res, err := client.Do(req)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+	defer res.Body.Close()
+
+	body, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+
+	// body is json - check for success/error
+	var jsonResponse map[string]interface{}
+	err = json.Unmarshal(body, &jsonResponse)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+
+	success := jsonResponse["success"].(bool)
+	if !success {
+		fmt.Println("failed to update client")
+		fmt.Println(jsonResponse["message"])
+		return errors.New("failed to update client")
+	}
+
+	fmt.Println("client updated!")
 
 	return nil
 }
@@ -406,6 +518,12 @@ func findClientID(hostname string, ip string, serverIP string, PHPSESSID string,
 
 			// find the client by hostname and IP address
 			if hostname == clientComment && ip == clientIP {
+				return clientID, groupIDs, clientComment, nil
+			} // fallback - compare just the hostname
+			if hostname == clientComment {
+				return clientID, groupIDs, clientComment, nil
+			} // fallback - compare just the IP address
+			if ip == clientIP {
 				return clientID, groupIDs, clientComment, nil
 			}
 		}
