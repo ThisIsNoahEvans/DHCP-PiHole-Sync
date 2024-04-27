@@ -519,25 +519,53 @@ func main() {
 		return
 	}
 
-	// get the token from a file
-	file, err := os.Open("telegram-token.txt")
+	// Get the bot token from a file
+	tokenFile, err := os.Open("telegram-token.txt")
 	if err != nil {
-		log.Panic(err)
+		log.Panic(err) // Proper error handling in case the file cannot be opened
 	}
-	defer file.Close()
+	defer tokenFile.Close() // Ensure that file.Close() is called at the end of the function
 
+	tokenScanner := bufio.NewScanner(tokenFile)
 	var botToken string
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := scanner.Text()
-		botToken = strings.TrimSpace(line)
+	if tokenScanner.Scan() {
+		botToken = strings.TrimSpace(tokenScanner.Text())
 	}
+
+	if err := tokenScanner.Err(); err != nil {
+		log.Panicf("Failed to read bot token: %v", err)
+	}
+
+	// Initialize the bot with the token
 	bot, err := tgbotapi.NewBotAPI(botToken)
 	if err != nil {
 		log.Panic(err)
 	}
-
 	log.Printf("Authorized on account %s", bot.Self.UserName)
+
+	// Open the file containing the authorized user's ID
+	userFile, err := os.Open("authorised-user.txt")
+	if err != nil {
+		log.Panic(err) // Proper error handling in case the file cannot be opened
+	}
+	defer userFile.Close() // Ensure that file.Close() is called at the end of the function
+
+	userScanner := bufio.NewScanner(userFile)
+	var authorisedUser int
+	if userScanner.Scan() {
+		trimmedLine := strings.TrimSpace(userScanner.Text())
+		authorisedUser, err = strconv.Atoi(trimmedLine) // Convert the trimmed string to an integer
+		if err != nil {
+			log.Panicf("Failed to convert user ID to integer: %v", err)
+		}
+	}
+
+	if err := userScanner.Err(); err != nil {
+		log.Panicf("Failed to read authorized user ID: %v", err)
+	}
+
+	// Use authorisedUser as needed in your program
+	log.Printf("Authorized user ID: %d", authorisedUser)
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
@@ -549,6 +577,11 @@ func main() {
 
 	for update := range updates {
 		fmt.Println("update:", update.CallbackQuery)
+
+		if update.Message != nil && update.Message.From.ID != authorisedUser {
+			log.Println("Unauthorized access attempted.")
+			continue // Skip processing this update
+		}
 
 		if update.CallbackQuery != nil { // Check if there is a callback query
 			callbackData := update.CallbackQuery.Data

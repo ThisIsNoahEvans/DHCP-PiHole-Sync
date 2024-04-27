@@ -28,3 +28,6 @@ dhcpd.conf
 
 # Telegram Token
 telegram-token.txt
+
+# Authorised User
+authorised-user.txt
