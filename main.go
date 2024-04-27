@@ -472,7 +472,7 @@ func switchGroup(clientID string, groupID int, clientComment string, serverIP st
 	req.Header.Add("Accept-Language", "en-GB,en-US;q=0.9,en;q=0.8")
 	req.Header.Add("Connection", "keep-alive")
 	req.Header.Add("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-	req.Header.Add("Cookie", "PHPSESSID="+PHPSESSID + "; PHPSESSID="+PHPSESSID)
+	req.Header.Add("Cookie", "PHPSESSID="+PHPSESSID+"; PHPSESSID="+PHPSESSID)
 	req.Header.Add("DNT", "1")
 	req.Header.Add("Origin", "http://"+serverIP)
 	req.Header.Add("Referer", "http://"+serverIP+"/admin/groups-clients.php")
@@ -491,7 +491,6 @@ func switchGroup(clientID string, groupID int, clientComment string, serverIP st
 		fmt.Println(err)
 		return err
 	}
-	
 
 	// {"success":true,"message":null}
 	// check for success
@@ -578,9 +577,30 @@ func main() {
 				continue
 			}
 
-			// Optional: send confirmation message or any other follow-up
-			msg := tgbotapi.NewMessage(update.CallbackQuery.Message.Chat.ID, fmt.Sprintf("Toggled block for %s (%s)", hostname, ip))
-			bot.Send(msg)
+			devices, err := parseStaticHosts("dhcpd.conf")
+			if err != nil {
+				msg := tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("Error: %v", err))
+				bot.Send(msg)
+				continue
+			}
+
+			// Re-fetch devices or simply re-use if they are still valid
+			var rows [][]tgbotapi.InlineKeyboardButton
+			for _, device := range devices {
+				status := getBlockStatus(device.Hostname, device.IP, serverIP, PHPSESSID, token)
+				callbackData := fmt.Sprintf("Hostname: %s, IP: %s", device.Hostname, device.IP)
+				buttonText := fmt.Sprintf("%s (%s) - %s", device.Hostname, device.IP, status)
+				row := tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonData(buttonText, callbackData),
+				)
+				rows = append(rows, row)
+			}
+			keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
+
+			// Update the message
+			editMsg := tgbotapi.NewEditMessageText(update.CallbackQuery.Message.Chat.ID, update.CallbackQuery.Message.MessageID, "Select a client:")
+			editMsg.ReplyMarkup = &keyboard
+			bot.Send(editMsg)
 
 			continue // skip further processing since we've handled the callback query
 		}
@@ -602,8 +622,10 @@ func main() {
 
 				var rows [][]tgbotapi.InlineKeyboardButton
 				for _, device := range devices {
+					blockStatus := getBlockStatus(device.Hostname, device.IP, serverIP, PHPSESSID, token)
+
 					callbackData := fmt.Sprintf("Hostname: %s, IP: %s", device.Hostname, device.IP)
-					buttonText := fmt.Sprintf("%s (%s)", device.Hostname, device.IP)
+					buttonText := fmt.Sprintf(" %s (%s) %s", device.Hostname, device.IP, blockStatus)
 					row := tgbotapi.NewInlineKeyboardRow(
 						tgbotapi.NewInlineKeyboardButtonData(buttonText, callbackData),
 					)
@@ -617,4 +639,21 @@ func main() {
 		}
 	}
 
+}
+
+func getBlockStatus(hostname, ip, serverIP, PHPSESSID, token string) string {
+	_, groups, _, err := findClientID(hostname, ip, serverIP, PHPSESSID, token)
+	if err != nil {
+		fmt.Printf("Error finding client ID: %v\n", err)
+		return "⚠️" // Indicates an error
+	}
+
+	for _, groupID := range groups {
+		if groupID == 0 {
+			return "❌"
+		} else if groupID == 1 {
+			return "✅"
+		}
+	}
+	return "🔍" // Default, in case no group matches
 }
