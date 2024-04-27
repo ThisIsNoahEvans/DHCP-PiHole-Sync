@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -619,6 +620,10 @@ func main() {
 
 			// Re-fetch devices or simply re-use if they are still valid
 			var rows [][]tgbotapi.InlineKeyboardButton
+			// sort devices by hostname
+			sort.Slice(devices, func(i, j int) bool {
+				return devices[i].Hostname < devices[j].Hostname
+			})
 			for _, device := range devices {
 				status := getBlockStatus(device.Hostname, device.IP, serverIP, PHPSESSID, token)
 				callbackData := fmt.Sprintf("Hostname: %s, IP: %s", device.Hostname, device.IP)
@@ -684,6 +689,10 @@ func main() {
 
 				// Prepare new keyboard
 				var rows [][]tgbotapi.InlineKeyboardButton
+				// sort devices by hostname
+				sort.Slice(devices, func(i, j int) bool {
+					return devices[i].Hostname < devices[j].Hostname
+				})
 				for _, device := range devices {
 					blockStatus := getBlockStatus(device.Hostname, device.IP, serverIP, PHPSESSID, token)
 					callbackData := fmt.Sprintf("Hostname: %s, IP: %s", device.Hostname, device.IP)
