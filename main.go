@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"os"
 	"strings"
 	"time"
-	// "time"
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 )
 
 // Device represents a DHCP static lease with a hostname and an IP address.
@@ -264,7 +266,7 @@ func parseStaticHosts(filePath string) ([]Device, error) {
 	return devices, nil
 }
 
-func main() {
+func sync() {
 
 	serverIP := "10.45.1.2"
 	password := "f26WR9aDKy"
@@ -275,7 +277,7 @@ func main() {
 		return
 	}
 
-	filePath := "dhcpd.conf" // specify the path to your dhcpd.conf file
+	filePath := "dhcpd.conf"
 	devices, err := parseStaticHosts(filePath)
 	if err != nil {
 		fmt.Println("Error:", err)
@@ -320,4 +322,65 @@ func main() {
 		}
 	}
 
+}
+
+func main() {
+
+	sync()
+
+	// get the token from a file
+	file, err := os.Open("telegram-token.txt")
+	if err != nil {
+		log.Panic(err)
+	}
+	defer file.Close()
+
+	var botToken string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		botToken = strings.TrimSpace(line)
+	}
+	bot, err := tgbotapi.NewBotAPI(botToken)
+	if err != nil {
+		log.Panic(err)
+	}
+
+	bot.Debug = true
+	log.Printf("Authorized on account %s", bot.Self.UserName)
+
+	u := tgbotapi.NewUpdate(0)
+	u.Timeout = 60
+
+	updates, err := bot.GetUpdatesChan(u)
+	if err != nil {
+		log.Panic(err)
+	}
+
+	for update := range updates {
+		if update.Message == nil { // ignore any non-Message updates
+			continue
+		}
+
+		// Handle commands
+		if update.Message.IsCommand() {
+			switch update.Message.Command() {
+			case "getclients":
+				devices, err := parseStaticHosts("dhcpd.conf")
+				if err != nil {
+					msg := tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("Error: %v", err))
+					bot.Send(msg)
+					continue
+				}
+
+				response := "Clients:\n"
+				for _, device := range devices {
+					response += fmt.Sprintf("Hostname: %s, IP: %s\n", device.Hostname, device.IP)
+				}
+
+				msg := tgbotapi.NewMessage(update.Message.Chat.ID, response)
+				bot.Send(msg)
+			}
+		}
+	}
 }

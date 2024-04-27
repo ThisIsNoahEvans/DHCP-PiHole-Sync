@@ -25,3 +25,6 @@ dhcp-pihole-sync
 
 # Example Config
 dhcpd.conf
+
+# Telegram Token
+telegram-token.txt
