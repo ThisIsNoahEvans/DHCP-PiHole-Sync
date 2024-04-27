@@ -416,14 +416,14 @@ func findClientID(hostname string, ip string, serverIP string, PHPSESSID string,
 	return "", nil, "", nil
 }
 
-func toggleBlock(hostname string, ip string, serverIP string, PHPSESSID string, token string) {
+func toggleBlock(hostname string, ip string, serverIP string, PHPSESSID string, token string) error {
 	fmt.Println("!!!!!!! Toggling block for", hostname, ip)
 
 	// find the client by hostname and IP address
 	clientID, groups, comment, err := findClientID(hostname, ip, serverIP, PHPSESSID, token)
 	if err != nil {
 		fmt.Println(err)
-		return
+		return err
 	}
 
 	fmt.Println("Found Client ID:", clientID)
@@ -438,7 +438,7 @@ func toggleBlock(hostname string, ip string, serverIP string, PHPSESSID string, 
 			err = switchGroup(clientID, 1, comment, serverIP, PHPSESSID, token)
 			if err != nil {
 				fmt.Println(err)
-				return
+				return err
 			}
 			break
 		} else if groupID == 1 {
@@ -446,11 +446,13 @@ func toggleBlock(hostname string, ip string, serverIP string, PHPSESSID string, 
 			err = switchGroup(clientID, 0, comment, serverIP, PHPSESSID, token)
 			if err != nil {
 				fmt.Println(err)
-				return
+				return err
 			}
 			break
 		}
 	}
+
+	return nil
 }
 
 func switchGroup(clientID string, groupID int, clientComment string, serverIP string, PHPSESSID string, token string) error {
@@ -490,7 +492,22 @@ func switchGroup(clientID string, groupID int, clientComment string, serverIP st
 		return err
 	}
 	
-	fmt.Println(string(body))
+
+	// {"success":true,"message":null}
+	// check for success
+	var jsonResponse map[string]interface{}
+	err = json.Unmarshal(body, &jsonResponse)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+
+	success := jsonResponse["success"].(bool)
+	if !success {
+		fmt.Println("failed to add client")
+		fmt.Println(jsonResponse["message"])
+		return errors.New("failed to switch group")
+	}
 
 	return nil
 }
@@ -552,7 +569,14 @@ func main() {
 			fmt.Println("Sending toggleBlock request for hostname:", hostname, "ip:", ip)
 
 			// Call your toggleBlock function
-			toggleBlock(hostname, ip, serverIP, PHPSESSID, token)
+			err := toggleBlock(hostname, ip, serverIP, PHPSESSID, token)
+			if err != nil {
+				fmt.Println(err)
+				// send error message
+				msg := tgbotapi.NewMessage(update.CallbackQuery.Message.Chat.ID, fmt.Sprintf("Error toggling block: %v", err))
+				bot.Send(msg)
+				continue
+			}
 
 			// Optional: send confirmation message or any other follow-up
 			msg := tgbotapi.NewMessage(update.CallbackQuery.Message.Chat.ID, fmt.Sprintf("Toggled block for %s (%s)", hostname, ip))
