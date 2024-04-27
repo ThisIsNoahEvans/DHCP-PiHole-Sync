@@ -3,12 +3,13 @@ package main
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"io/ioutil"
 
+	"encoding/json"
 	"net/http"
 	"strings"
-	"encoding/json"
 )
 
 // get a cookie from a header
@@ -138,8 +139,6 @@ func authenticate(serverIP string, password string) (string, string, error) {
 		return "", "", errors.New("PHPSESSID not found in response")
 	}
 
-	fmt.Println("initial PHPSESSID ::: ", PHPSESSID)
-
 	token, newPHPSESSID, err := getToken(PHPSESSID, serverIP)
 	if err != nil {
 		fmt.Println(err)
@@ -153,9 +152,6 @@ func createClient(serverIP string, clientIP string, description string, PHPSESSI
 	url := "http://" + serverIP + "/admin/scripts/pi-hole/php/groups.php"
 	method := "POST"
 
-	fmt.Println("using TOKEN ::: ", token)
-	fmt.Println("using PHPSESSID ::: ", PHPSESSID)
-
 	// add the params using string interpolation
 	payload := strings.NewReader(`action=add_client&ip=` + clientIP + `&comment=` + description + `&token=` + token)
 
@@ -164,51 +160,56 @@ func createClient(serverIP string, clientIP string, description string, PHPSESSI
 
 	if err != nil {
 		fmt.Println(err)
-		return nil
+		return errors.New("failed to create request")
 	}
 	req.Header.Add("Accept", "application/json, text/javascript, */*; q=0.01")
 	req.Header.Add("Accept-Language", "en-GB,en-US;q=0.9,en;q=0.8")
 	req.Header.Add("Connection", "keep-alive")
 	req.Header.Add("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-	req.Header.Add("Cookie", "PHPSESSID=" + PHPSESSID + "; PHPSESSID=" + PHPSESSID)
+	req.Header.Add("Cookie", "PHPSESSID="+PHPSESSID+"; PHPSESSID="+PHPSESSID)
 	req.Header.Add("DNT", "1")
-	req.Header.Add("Origin", "http://" + serverIP)
-	req.Header.Add("Referer", "http://" + serverIP + "/admin/groups-clients.php")
+	req.Header.Add("Origin", "http://"+serverIP)
+	req.Header.Add("Referer", "http://"+serverIP+"/admin/groups-clients.php")
 	req.Header.Add("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 	req.Header.Add("X-Requested-With", "XMLHttpRequest")
 
 	res, err := client.Do(req)
 	if err != nil {
 		fmt.Println(err)
-		return nil
+		return errors.New("failed to send request")
 	}
 	defer res.Body.Close()
 
 	body, err := ioutil.ReadAll(res.Body)
 	if err != nil {
 		fmt.Println(err)
-		return nil
+		return errors.New("failed to read response")
 	}
 
 	// {"success":true,"message":null}
+
+	// if response contains text Wrong token! Please re-login on the Pi-hole dashboard.
+	if strings.Contains(string(body), "Wrong token! Please re-login on the Pi-hole dashboard.") {
+		return errors.New("token error, try again")
+	}
 
 	// convert body to json
 	var jsonResponse map[string]interface{}
 	err = json.Unmarshal(body, &jsonResponse)
 	if err != nil {
 		fmt.Println(err)
-		return nil
+		return errors.New("failed to parse response")
 	}
 
 	success := jsonResponse["success"].(bool)
 	if !success {
 		fmt.Println("failed to add client")
 		fmt.Println(jsonResponse["message"])
-		return nil
+		return errors.New("failed to add client")
 	}
-	
-	fmt.Println("client added")
-	
+
+	fmt.Println("client added!")
+
 	return nil
 }
 
@@ -222,13 +223,38 @@ func main() {
 		return
 	}
 
-	fmt.Println("GOT PHPSESSID ::: ", PHPSESSID)
-	fmt.Println("GOT TOKEN ::: ", token)
-
 	// add a client
-	err = createClient(serverIP, "10.10.10.90", "TEST FROM GO", PHPSESSID, token)
-	if err != nil {
-		fmt.Println(err)
-		return
+	maxRetries := 5
+	retryCount := 0
+
+	for retryCount < maxRetries {
+		err := createClient(serverIP, "192.168.1.99", "TEST FROM GO", PHPSESSID, token)
+		if err != nil {
+			if err.Error() == "token error, try again" {
+				fmt.Println("Retry due to token error:", retryCount+1)
+				retryCount++
+
+				// wait for a second * retryCount
+				time.Sleep(time.Duration(retryCount) * time.Second)
+				// reauthenticate
+				PHPSESSID, token, err = authenticate(serverIP, password)
+				if err != nil {
+					fmt.Println("Error:", err)
+					break
+				}
+				
+				continue
+			} else {
+				fmt.Println("Error:", err)
+				break
+			}
+		}
+		fmt.Println("Success on attempt", retryCount+1)
+		break
 	}
+
+	if retryCount == maxRetries {
+		fmt.Println("Failed after", maxRetries, "attempts")
+	}
+
 }
