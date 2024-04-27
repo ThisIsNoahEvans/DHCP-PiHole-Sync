@@ -5,14 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
 	"strings"
 	"time"
-
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 )
 
 // Device represents a DHCP static lease with a hostname and an IP address.
@@ -236,16 +235,14 @@ func parseStaticHosts(filePath string) ([]Device, error) {
 		line = strings.TrimSpace(line)
 
 		if strings.HasPrefix(line, "host") && strings.HasSuffix(line, "}") {
-			// Process the line containing host details
 			fields := strings.Fields(line)
 			if len(fields) < 6 {
-				continue // Not enough information
+				continue
 			}
 
 			hostname := strings.Trim(fields[1], "{ ")
 			ip := ""
 
-			// Loop through fields to find IP
 			for i := 0; i < len(fields); i++ {
 				if fields[i] == "fixed-address" && i+1 < len(fields) {
 					ip = strings.Trim(fields[i+1], ";")
@@ -266,7 +263,8 @@ func parseStaticHosts(filePath string) ([]Device, error) {
 	return devices, nil
 }
 
-func sync() {
+// returns the server IP, PHPSESSID, and token
+func sync() (string, string, string, error) {
 
 	serverIP := "10.45.1.2"
 	password := "f26WR9aDKy"
@@ -274,14 +272,14 @@ func sync() {
 	PHPSESSID, token, err := authenticate(serverIP, password)
 	if err != nil {
 		fmt.Println(err)
-		return
+		return "", "", "", err
 	}
 
 	filePath := "dhcpd.conf"
 	devices, err := parseStaticHosts(filePath)
 	if err != nil {
 		fmt.Println("Error:", err)
-		return
+		return "", "", "", err
 	}
 
 	for _, device := range devices {
@@ -322,11 +320,108 @@ func sync() {
 		}
 	}
 
+	return serverIP, PHPSESSID, token, nil
+}
+
+// Find a Pi-hole client ID by hostname and IP address
+func findClientID(hostname string, ip string, serverIP string, PHPSESSID string, token string) (string, error) {
+	url := "http://" + serverIP + "/admin/scripts/pi-hole/php/groups.php"
+	method := "POST"
+
+	payload := strings.NewReader(`action=get_clients&token=` + token)
+
+	client := &http.Client{}
+	req, err := http.NewRequest(method, url, payload)
+
+	if err != nil {
+		fmt.Println(err)
+		return "", err
+	}
+	req.Header.Add("Accept", "application/json, text/javascript, */*; q=0.01")
+	req.Header.Add("Accept-Language", "en-GB,en-US;q=0.9,en;q=0.8")
+	req.Header.Add("Connection", "keep-alive")
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+	req.Header.Add("Cookie", "PHPSESSID="+PHPSESSID)
+	req.Header.Add("DNT", "1")
+	req.Header.Add("Origin", "http://"+serverIP)
+	req.Header.Add("Referer", "http://"+serverIP+"/admin/groups-clients.php")
+	req.Header.Add("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+	req.Header.Add("X-Requested-With", "XMLHttpRequest")
+
+	res, err := client.Do(req)
+	if err != nil {
+		fmt.Println(err)
+		return "", err
+	}
+	defer res.Body.Close()
+
+	body, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		fmt.Println(err)
+		return "", err
+	}
+
+	// body is json - clients under data
+	var jsonResponse map[string]interface{}
+	err = json.Unmarshal(body, &jsonResponse)
+	if err != nil {
+		fmt.Println(err)
+		return "", errors.New("failed to parse response")
+	}
+
+	if data, ok := jsonResponse["data"].([]interface{}); ok {
+		for _, client := range data {
+			clientMap, ok := client.(map[string]interface{})
+			if !ok {
+				fmt.Println("Error parsing client data")
+				continue
+			}
+
+			// Convert id to string safely
+			clientID := fmt.Sprintf("%v", clientMap["id"]) // Using fmt.Sprintf to handle integer ID
+			clientComment := ""
+			if comment, ok := clientMap["comment"].(string); ok {
+				clientComment = comment
+			}
+			clientIP := ""
+			if ip, ok := clientMap["ip"].(string); ok {
+				clientIP = ip
+			}
+
+			// find the client by hostname and IP address
+			if hostname == clientComment && ip == clientIP {
+				fmt.Println("Found client:", clientID)
+				return clientID, nil
+			}
+		}
+	} else {
+		fmt.Println("Error: data field is not an array")
+		return "", errors.New("data field is not an array")
+	}
+
+	return "", nil
+}
+
+func toggleBlock(hostname string, ip string, serverIP string, PHPSESSID string, token string) {
+	fmt.Println("!!!!!!! Toggling block for", hostname, ip)
+
+	// find the client by hostname and IP address
+	clientID, err := findClientID(hostname, ip, serverIP, PHPSESSID, token)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	fmt.Println("Found Client ID:", clientID)
 }
 
 func main() {
 
-	sync()
+	serverIP, PHPSESSID, token, err := sync()
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
 
 	// get the token from a file
 	file, err := os.Open("telegram-token.txt")
@@ -346,7 +441,6 @@ func main() {
 		log.Panic(err)
 	}
 
-	bot.Debug = true
 	log.Printf("Authorized on account %s", bot.Self.UserName)
 
 	u := tgbotapi.NewUpdate(0)
@@ -358,7 +452,37 @@ func main() {
 	}
 
 	for update := range updates {
-		if update.Message == nil { // ignore any non-Message updates
+		fmt.Println("update:", update.CallbackQuery)
+
+		
+		if update.CallbackQuery != nil { // Check if there is a callback query
+			callbackData := update.CallbackQuery.Data
+			fmt.Println("callback data:", callbackData)
+
+			// Extracting hostname and IP using string manipulation
+			parts := strings.Split(callbackData, ", IP: ")
+			if len(parts) != 2 {
+				fmt.Println("Invalid callback data format")
+				continue
+			}
+
+			hostnamePart := parts[0]
+			ip := parts[1]
+			hostname := strings.TrimPrefix(hostnamePart, "Hostname: ")
+
+			fmt.Println("Sending toggleBlock request for hostname:", hostname, "ip:", ip)
+
+			// Call your toggleBlock function
+			toggleBlock(hostname, ip, serverIP, PHPSESSID, token)
+
+			// Optional: send confirmation message or any other follow-up
+			msg := tgbotapi.NewMessage(update.CallbackQuery.Message.Chat.ID, fmt.Sprintf("Toggled block for %s (%s)", hostname, ip))
+			bot.Send(msg)
+
+			continue // skip further processing since we've handled the callback query
+		}
+
+		if update.Message == nil { // ignore any non-Message and non-CallbackQuery updates
 			continue
 		}
 
@@ -373,14 +497,21 @@ func main() {
 					continue
 				}
 
-				response := "Clients:\n"
+				var rows [][]tgbotapi.InlineKeyboardButton
 				for _, device := range devices {
-					response += fmt.Sprintf("Hostname: %s, IP: %s\n", device.Hostname, device.IP)
+					callbackData := fmt.Sprintf("Hostname: %s, IP: %s", device.Hostname, device.IP)
+					buttonText := fmt.Sprintf("%s (%s)", device.Hostname, device.IP)
+					row := tgbotapi.NewInlineKeyboardRow(
+						tgbotapi.NewInlineKeyboardButtonData(buttonText, callbackData),
+					)
+					rows = append(rows, row)
 				}
-
-				msg := tgbotapi.NewMessage(update.Message.Chat.ID, response)
+				keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
+				msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Select a client:")
+				msg.ReplyMarkup = keyboard
 				bot.Send(msg)
 			}
 		}
 	}
+
 }
