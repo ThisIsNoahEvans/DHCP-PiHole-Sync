@@ -646,19 +646,48 @@ func main() {
 		if update.Message.IsCommand() {
 			switch update.Message.Command() {
 			case "getclients":
-				devices, err := parseStaticHosts("dhcpd.conf")
+				devices, err := parseStaticHosts("dhcpd.conf") // Your device parsing logic
 				if err != nil {
 					msg := tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("Error: %v", err))
 					bot.Send(msg)
 					continue
 				}
 
+				// Read and delete previous messages
+				previousMessages, err := os.Open("previous-messages.txt")
+				if err != nil {
+					log.Println("Failed to open previous-messages.txt:", err)
+					continue
+				}
+				scanner := bufio.NewScanner(previousMessages)
+				var messageIDsToDelete []int
+				for scanner.Scan() {
+					id, convErr := strconv.Atoi(scanner.Text())
+					if convErr != nil {
+						log.Println("Error converting message ID to integer:", convErr)
+						continue
+					}
+					messageIDsToDelete = append(messageIDsToDelete, id)
+				}
+				previousMessages.Close()
+
+				// Delete previous messages
+				for _, id := range messageIDsToDelete {
+					deleteMsg := tgbotapi.DeleteMessageConfig{
+						ChatID:    update.Message.Chat.ID,
+						MessageID: id,
+					}
+					if _, err := bot.DeleteMessage(deleteMsg); err != nil {
+						log.Printf("Failed to delete message %d: %v\n", id, err)
+					}
+				}
+
+				// Prepare new keyboard
 				var rows [][]tgbotapi.InlineKeyboardButton
 				for _, device := range devices {
 					blockStatus := getBlockStatus(device.Hostname, device.IP, serverIP, PHPSESSID, token)
-
 					callbackData := fmt.Sprintf("Hostname: %s, IP: %s", device.Hostname, device.IP)
-					buttonText := fmt.Sprintf(" %s (%s) %s", device.Hostname, device.IP, blockStatus)
+					buttonText := fmt.Sprintf("%s (%s) %s", device.Hostname, device.IP, blockStatus)
 					row := tgbotapi.NewInlineKeyboardRow(
 						tgbotapi.NewInlineKeyboardButtonData(buttonText, callbackData),
 					)
@@ -667,7 +696,22 @@ func main() {
 				keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
 				msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Select a client:")
 				msg.ReplyMarkup = keyboard
-				bot.Send(msg)
+				sentMsg, err := bot.Send(msg)
+				if err != nil {
+					log.Println("Failed to send message:", err)
+					continue
+				}
+
+				// Store new message ID
+				newMessagesFile, err := os.Create("previous-messages.txt")
+				if err != nil {
+					log.Println("Failed to create/open previous-messages.txt:", err)
+					continue
+				}
+				defer newMessagesFile.Close()
+				if _, err := newMessagesFile.WriteString(fmt.Sprintf("%d\n", sentMsg.MessageID)); err != nil {
+					log.Println("Failed to write message ID to file:", err)
+				}
 			}
 		}
 	}

@@ -31,3 +31,6 @@ telegram-token.txt
 
 # Authorised User
 authorised-user.txt
+
+# Previous messages
+previous-messages.txt
