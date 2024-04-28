@@ -378,8 +378,24 @@ func parseStaticHosts(filePath string) ([]Device, error) {
 // returns the server IP, PHPSESSID, and token
 func sync() (string, string, string, error) {
 
+	// Get the password from a file
+	passwordFile, err := os.Open("pihole-password.txt")
+	if err != nil {
+		log.Panic(err) // Proper error handling in case the file cannot be opened
+	}
+	defer passwordFile.Close() // Ensure that file.Close() is called at the end of the function
+
+	passwordScanner := bufio.NewScanner(passwordFile)
+	var password string
+	if passwordScanner.Scan() {
+		password = strings.TrimSpace(passwordScanner.Text())
+	}
+
+	if err := passwordScanner.Err(); err != nil {
+		log.Panicf("Failed to read password: %v", err)
+	}
+
 	serverIP := "10.45.1.2"
-	password := "PASSWORD"
 
 	PHPSESSID, token, err := authenticate(serverIP, password)
 	if err != nil {
@@ -648,7 +664,15 @@ func main() {
 	for update := range updates {
 		fmt.Println("update:", update.CallbackQuery)
 
-		if update.Message.From.ID != authorisedUser {
+		var fromID int
+		if update.CallbackQuery != nil {
+			fromID = update.CallbackQuery.From.ID
+		} else {
+			fromID = update.Message.From.ID
+		}
+
+
+		if fromID != authorisedUser {
 			log.Println("Unauthorized access attempted.")
 			continue // Skip processing this update
 		}
@@ -662,7 +686,7 @@ func main() {
 
 				devices, err := parseStaticHosts("dhcpd.conf")
 				if err != nil {
-					msg := tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("Error: %v", err))
+					msg := tgbotapi.NewMessage(int64(fromID), fmt.Sprintf("Error: %v", err))
 					bot.Send(msg)
 					continue
 				}
@@ -690,7 +714,7 @@ func main() {
 				keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
 
 				// Update the message
-				editMsg := tgbotapi.NewEditMessageText(update.CallbackQuery.Message.Chat.ID, update.CallbackQuery.Message.MessageID, "Select a client:")
+				editMsg := tgbotapi.NewEditMessageText(int64(fromID), update.CallbackQuery.Message.MessageID, "Select a client:")
 				editMsg.ReplyMarkup = &keyboard
 				bot.Send(editMsg)
 
@@ -719,14 +743,14 @@ func main() {
 			if err != nil {
 				fmt.Println(err)
 				// send error message
-				msg := tgbotapi.NewMessage(update.CallbackQuery.Message.Chat.ID, fmt.Sprintf("Error toggling block: %v", err))
+				msg := tgbotapi.NewMessage(int64(fromID), fmt.Sprintf("Error toggling block: %v", err))
 				bot.Send(msg)
 				continue
 			}
 
 			devices, err := parseStaticHosts("dhcpd.conf")
 			if err != nil {
-				msg := tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("Error: %v", err))
+				msg := tgbotapi.NewMessage(int64(fromID), fmt.Sprintf("Error: %v", err))
 				bot.Send(msg)
 				continue
 			}
@@ -754,7 +778,7 @@ func main() {
 			keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
 
 			// Update the message
-			editMsg := tgbotapi.NewEditMessageText(update.CallbackQuery.Message.Chat.ID, update.CallbackQuery.Message.MessageID, "Select a client:")
+			editMsg := tgbotapi.NewEditMessageText(int64(fromID), update.CallbackQuery.Message.MessageID, "Select a client:")
 			editMsg.ReplyMarkup = &keyboard
 			bot.Send(editMsg)
 
@@ -771,7 +795,7 @@ func main() {
 			case "getclients":
 				devices, err := parseStaticHosts("dhcpd.conf") // Your device parsing logic
 				if err != nil {
-					msg := tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("Error: %v", err))
+					msg := tgbotapi.NewMessage(int64(fromID), fmt.Sprintf("Error: %v", err))
 					bot.Send(msg)
 					continue
 				}
@@ -797,7 +821,7 @@ func main() {
 				// Delete previous messages
 				for _, id := range messageIDsToDelete {
 					deleteMsg := tgbotapi.DeleteMessageConfig{
-						ChatID:    update.Message.Chat.ID,
+						ChatID:    int64(fromID),
 						MessageID: id,
 					}
 					if _, err := bot.DeleteMessage(deleteMsg); err != nil {
@@ -826,7 +850,7 @@ func main() {
 				rows = append(rows, tgbotapi.NewInlineKeyboardRow(refreshButton))
 
 				keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
-				msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Select a client:")
+				msg := tgbotapi.NewMessage(int64(fromID), "Select a client:")
 				msg.ReplyMarkup = keyboard
 				sentMsg, err := bot.Send(msg)
 				if err != nil {

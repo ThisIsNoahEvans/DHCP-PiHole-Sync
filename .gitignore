@@ -34,3 +34,6 @@ authorised-user.txt
 
 # Previous messages
 previous-messages.txt
+
+# Pi-hole password
+pihole-password.txt
