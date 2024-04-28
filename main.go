@@ -648,7 +648,7 @@ func main() {
 	for update := range updates {
 		fmt.Println("update:", update.CallbackQuery)
 
-		if update.Message != nil && update.Message.From.ID != authorisedUser {
+		if update.Message.From.ID != authorisedUser {
 			log.Println("Unauthorized access attempted.")
 			continue // Skip processing this update
 		}
