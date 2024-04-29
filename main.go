@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 )
@@ -375,6 +374,40 @@ func parseStaticHosts(filePath string) ([]Device, error) {
 	return devices, nil
 }
 
+
+
+func findMacAddress(ip, leasesPath string) (string, error) {
+	file, err := os.Open(leasesPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open leases file: %v", err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	var foundIP bool
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.Contains(line, fmt.Sprintf("lease %s {", ip)) {
+			foundIP = true
+		}
+		if foundIP && strings.Contains(line, "hardware ethernet") {
+			parts := strings.Fields(line)
+			if len(parts) >= 3 {
+				return strings.Trim(parts[2], ";"), nil
+			}
+		}
+		if foundIP && strings.Contains(line, "}") {
+			break
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("failed to read leases file: %v", err)
+	}
+
+	return "", fmt.Errorf("MAC address not found for IP %s", ip)
+}
+
 // returns the server IP, PHPSESSID, and token
 func sync() (string, string, string, error) {
 
@@ -600,6 +633,14 @@ func toggleBlock(hostname string, ip string, serverIP string, PHPSESSID string, 
 
 func main() {
 
+	mac, err := findMacAddress("10.45.1.176", "dhcpd.leases")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("MAC address:", mac)
+
+	return
+
 	serverIP, PHPSESSID, token, err := sync()
 	if err != nil {
 		fmt.Println(err)
@@ -670,7 +711,6 @@ func main() {
 		} else {
 			fromID = update.Message.From.ID
 		}
-
 
 		if fromID != authorisedUser {
 			log.Println("Unauthorized access attempted.")
@@ -871,7 +911,6 @@ func main() {
 			}
 		}
 	}
-
 }
 
 func getBlockStatus(hostname, ip, serverIP, PHPSESSID, token string) string {

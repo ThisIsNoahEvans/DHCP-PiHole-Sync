@@ -37,3 +37,6 @@ previous-messages.txt
 
 # Pi-hole password
 pihole-password.txt
+
+# DHCP leases
+dhcpd.leases
