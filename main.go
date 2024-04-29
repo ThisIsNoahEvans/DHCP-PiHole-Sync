@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -374,7 +376,228 @@ func parseStaticHosts(filePath string) ([]Device, error) {
 	return devices, nil
 }
 
+// dhcpd.conf categories for lease ranges
+// returns an map of category name to [startIP, endIP]
+func findDHCPCategories(filePath string) (map[string][2]int, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open DHCP config file: %w", err)
+	}
+	defer file.Close()
 
+	categories := make(map[string][2]int)
+	scanner := bufio.NewScanner(file)
+	digitRegex := regexp.MustCompile(`\d+`) // Regular expression to extract digits
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "##") && strings.Contains(line, "-") {
+			line = strings.Trim(line, "# ")       // Trim spaces and # from both ends
+			parts := strings.SplitN(line, ":", 2) // Split only into two parts
+			if len(parts) == 2 {
+				categoryName := strings.TrimSpace(parts[0])
+				rangeStr := strings.TrimSpace(parts[1])
+				rangeParts := strings.Fields(rangeStr) // Split by whitespace and get range
+				if len(rangeParts) >= 2 {
+					// Extract only digits from each part using regex
+					startStr := digitRegex.FindString(rangeParts[0])
+					endStr := digitRegex.FindString(rangeParts[len(rangeParts)-1])
+					startIP, errStart := strconv.Atoi(startStr)
+					endIP, errEnd := strconv.Atoi(endStr)
+					if errStart == nil && errEnd == nil {
+						categories[categoryName] = [2]int{startIP, endIP} // Add the category to the map
+					}
+				}
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read DHCP config file: %w", err)
+	}
+
+	return categories, nil
+}
+
+func createStaticHost(hostname, currentIP, dhcpdConfPath, leasesPath, category string) error {
+	fmt.Println("Creating static host entry for", hostname, "with current IP", currentIP)
+
+	categories, err := findDHCPCategories(dhcpdConfPath)
+	if err != nil {
+		return err
+	}
+
+	range_, exists := categories[category]
+	if !exists {
+		return fmt.Errorf("category '%s' not found", category)
+	}
+
+	nextIP, err := findNextAvailableIP(range_[0], range_[1], dhcpdConfPath)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("Next available IP for", category, ":", nextIP)
+
+	// find the MAC address of device with current IP
+	macAddress, err := findMacAddress(currentIP, leasesPath)
+	if err != nil {
+		return fmt.Errorf("failed to find MAC address: %v", err)
+	}
+
+	// check if the host or MAC address already exists in the DHCP config file
+	exists, checkErr := checkIfHostExists(hostname, macAddress, dhcpdConfPath)
+	if checkErr != nil {
+		return fmt.Errorf("failed to check if host or MAC address exists: %v", err)
+	}
+	if exists {
+		return fmt.Errorf("host or MAC address already exists in DHCP config file")
+	}
+
+	addErr := addHostToCategory(hostname, macAddress, nextIP, category, dhcpdConfPath)
+	if addErr != nil {
+		return addErr
+	}
+
+	return nil
+}
+
+// check if the host or MAC address already exists in the DHCP config file
+func checkIfHostExists(hostname, macAddress, dhcpdConfPath string) (bool, error) {
+	// Open the DHCP configuration file
+	file, err := os.Open(dhcpdConfPath)
+	if err != nil {
+		return false, fmt.Errorf("failed to open DHCP config file: %v", err)
+	}
+	defer file.Close()
+
+	// Create a scanner to read through the file line by line
+	scanner := bufio.NewScanner(file)
+
+	// Scan each line in the file
+	for scanner.Scan() {
+		line := scanner.Text()
+		// Look for lines that start with "host" which indicate a host entry
+		if strings.HasPrefix(line, "host") {
+			// Check if the current line contains the hostname or MAC address
+			if strings.Contains(line, hostname) || strings.Contains(line, macAddress) {
+				return true, nil
+			}
+		}
+	}
+
+	// Check for scanning errors
+	if err := scanner.Err(); err != nil {
+		return false, fmt.Errorf("error reading from DHCP config file: %v", err)
+	}
+
+	// If no match is found and no error occurred, return false
+	return false, nil
+}
+
+// find where to add the new host entry
+func addHostToCategory(hostname, macAddress string, nextIP int, category, filePath string) error {
+	// Open the original file for reading
+	file, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open DHCP config file: %v", err)
+	}
+	defer file.Close()
+
+	var buffer bytes.Buffer
+	scanner := bufio.NewScanner(file)
+	inCategory := false
+	lastHostWritten := false
+	appendHere := false
+
+	// Iterate through the file to find the appropriate category
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// Detect the start of the desired category
+		if strings.Contains(line, fmt.Sprintf("## %s", category)) {
+			inCategory = true
+			buffer.WriteString(line + "\n")
+			continue
+		}
+
+		// Detect the start of a new category while in the desired category
+		if inCategory && strings.HasPrefix(line, "##") {
+			appendHere = true // Mark that the new host should be appended just before this line
+		}
+
+		// If within the category and no new category has started
+		if inCategory && !appendHere {
+			buffer.WriteString(line + "\n")
+			// If line starts with "host" keep track of it
+			if strings.HasPrefix(line, "host") {
+				lastHostWritten = true
+			}
+		} else if appendHere && lastHostWritten {
+			// Insert new host entry here as we are at the end of the category
+			newHostEntry := fmt.Sprintf("host %s { hardware ethernet %s; fixed-address 10.45.1.%d; }\n", hostname, macAddress, nextIP)
+			buffer.WriteString(newHostEntry)
+			buffer.WriteString(line + "\n")
+			appendHere = false
+			inCategory = false
+			lastHostWritten = false // Reset after inserting
+		} else {
+			// Write other lines normally
+			buffer.WriteString(line + "\n")
+		}
+	}
+
+	// If the category is the last one and no new category was detected after, append the new host at the end
+	if inCategory && lastHostWritten && !appendHere {
+		newHostEntry := fmt.Sprintf("host %s { hardware ethernet %s; fixed-address 10.45.1.%d; }\n", hostname, macAddress, nextIP)
+		buffer.WriteString(newHostEntry)
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("error while reading DHCP config file: %v", err)
+	}
+
+	// Write the updated content back to the file
+	if err := os.WriteFile(filePath, buffer.Bytes(), 0644); err != nil {
+		return fmt.Errorf("failed to write updated DHCP config file: %v", err)
+	}
+
+	return nil
+}
+
+func findNextAvailableIP(startIP, endIP int, dhcpdConfPath string) (int, error) {
+	usedIPs := make(map[int]bool)
+	file, err := os.Open(dhcpdConfPath)
+	if err != nil {
+		return 0, fmt.Errorf("failed to open DHCP config file: %v", err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "host") {
+			parts := strings.Fields(line)
+			// Loop through parts to find the fixed-address entry
+			for i, part := range parts {
+				if part == "fixed-address" && i+1 < len(parts) {
+					ipStr := strings.TrimSuffix(parts[i+1], ";")
+					if ip, err := strconv.Atoi(strings.Split(ipStr, ".")[3]); err == nil {
+						usedIPs[ip] = true
+					}
+				}
+			}
+		}
+	}
+
+	for ip := startIP; ip <= endIP; ip++ {
+		if !usedIPs[ip] {
+			return ip, nil
+		}
+	}
+
+	return 0, fmt.Errorf("no available IPs in the range from %d to %d", startIP, endIP)
+}
 
 func findMacAddress(ip, leasesPath string) (string, error) {
 	file, err := os.Open(leasesPath)
@@ -633,11 +856,10 @@ func toggleBlock(hostname string, ip string, serverIP string, PHPSESSID string, 
 
 func main() {
 
-	mac, err := findMacAddress("10.45.1.176", "dhcpd.leases")
+	err := createStaticHost("booping", "10.45.1.176", "dhcpd.conf", "dhcpd.leases", "CAMERAS")
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("MAC address:", mac)
 
 	return
 
