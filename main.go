@@ -855,14 +855,6 @@ func toggleBlock(hostname string, ip string, serverIP string, PHPSESSID string, 
 }
 
 func main() {
-
-	err := createStaticHost("booping", "10.45.1.176", "dhcpd.conf", "dhcpd.leases", "CAMERAS")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	return
-
 	serverIP, PHPSESSID, token, err := sync()
 	if err != nil {
 		fmt.Println(err)
@@ -925,7 +917,6 @@ func main() {
 	}
 
 	for update := range updates {
-		fmt.Println("update:", update.CallbackQuery)
 
 		var fromID int
 		if update.CallbackQuery != nil {
@@ -944,6 +935,13 @@ func main() {
 			// if it's a refresh button, send a new menu
 			if update.CallbackQuery.Data == "refresh" {
 				fmt.Println("Refresh button clicked")
+				// send a refresh message
+				msg := tgbotapi.NewMessage(int64(fromID), "Refreshing...")
+				refreshMsg, err := bot.Send(msg)
+				if err != nil {
+					log.Println("Failed to send refresh message:", err)
+					continue
+				}
 				sync()
 
 				devices, err := parseStaticHosts("dhcpd.conf")
@@ -973,6 +971,10 @@ func main() {
 				refreshButton := tgbotapi.NewInlineKeyboardButtonData("Refresh", "refresh")
 				rows = append(rows, tgbotapi.NewInlineKeyboardRow(refreshButton))
 
+				// add a new button at the bottom
+				newButton := tgbotapi.NewInlineKeyboardButtonData("New", "new")
+				rows = append(rows, tgbotapi.NewInlineKeyboardRow(newButton))
+
 				keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
 
 				// Update the message
@@ -980,71 +982,104 @@ func main() {
 				editMsg.ReplyMarkup = &keyboard
 				bot.Send(editMsg)
 
+				// delete the refresh message
+				deleteMsg := tgbotapi.DeleteMessageConfig{
+					ChatID:    int64(fromID),
+					MessageID: refreshMsg.MessageID,
+				}
+				if _, err := bot.DeleteMessage(deleteMsg); err != nil {
+					log.Printf("Failed to delete refresh message %d: %v\n", refreshMsg.MessageID, err)
+				}
+
 				continue // skip further processing since we've handled the callback query
 
 			}
 
-			callbackData := update.CallbackQuery.Data
-			fmt.Println("callback data:", callbackData)
+			// if it's a toggle block (contains a hostname and IP)
+			if strings.Contains(update.CallbackQuery.Data, "Hostname: ") && strings.Contains(update.CallbackQuery.Data, ", IP: ") {
+				fmt.Println("got toggle block callback")
+				callbackData := update.CallbackQuery.Data
 
-			// Extracting hostname and IP using string manipulation
-			parts := strings.Split(callbackData, ", IP: ")
-			if len(parts) != 2 {
-				fmt.Println("Invalid callback data format")
-				continue
+				// send a loading message
+				msg := tgbotapi.NewMessage(int64(fromID), "Processing...")
+				loadingMsg, processErr := bot.Send(msg)
+				if processErr != nil {
+					log.Println("Failed to send loading message:", processErr)
+					continue
+				}
+
+				// Extracting hostname and IP using string manipulation
+				parts := strings.Split(callbackData, ", IP: ")
+				if len(parts) != 2 {
+					fmt.Println("Invalid callback data format")
+					continue
+				}
+
+				hostnamePart := parts[0]
+				ip := parts[1]
+				hostname := strings.TrimPrefix(hostnamePart, "Hostname: ")
+
+				fmt.Println("Sending toggleBlock request for hostname:", hostname, "ip:", ip)
+
+				// Call your toggleBlock function
+				err := toggleBlock(hostname, ip, serverIP, PHPSESSID, token)
+				if err != nil {
+					fmt.Println(err)
+					// send error message
+					msg := tgbotapi.NewMessage(int64(fromID), fmt.Sprintf("Error toggling block: %v", err))
+					bot.Send(msg)
+					continue
+				}
+
+				devices, err := parseStaticHosts("dhcpd.conf")
+				if err != nil {
+					msg := tgbotapi.NewMessage(int64(fromID), fmt.Sprintf("Error: %v", err))
+					bot.Send(msg)
+					continue
+				}
+
+				// Re-fetch devices or simply re-use if they are still valid
+				var rows [][]tgbotapi.InlineKeyboardButton
+				// sort devices by hostname
+				sort.Slice(devices, func(i, j int) bool {
+					return devices[i].Hostname < devices[j].Hostname
+				})
+				for _, device := range devices {
+					status := getBlockStatus(device.Hostname, device.IP, serverIP, PHPSESSID, token)
+					callbackData := fmt.Sprintf("Hostname: %s, IP: %s", device.Hostname, device.IP)
+					buttonText := fmt.Sprintf("%s (%s) - %s", device.Hostname, device.IP, status)
+					row := tgbotapi.NewInlineKeyboardRow(
+						tgbotapi.NewInlineKeyboardButtonData(buttonText, callbackData),
+					)
+					rows = append(rows, row)
+				}
+
+				// add a refresh button at the bottom
+				refreshButton := tgbotapi.NewInlineKeyboardButtonData("Refresh", "refresh")
+				rows = append(rows, tgbotapi.NewInlineKeyboardRow(refreshButton))
+
+				// add a new button at the bottom
+				newButton := tgbotapi.NewInlineKeyboardButtonData("New", "new")
+				rows = append(rows, tgbotapi.NewInlineKeyboardRow(newButton))
+
+				keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
+
+				// Update the message
+				editMsg := tgbotapi.NewEditMessageText(int64(fromID), update.CallbackQuery.Message.MessageID, "Select a client:")
+				editMsg.ReplyMarkup = &keyboard
+				bot.Send(editMsg)
+
+				// delete the loading message
+				deleteMsg := tgbotapi.DeleteMessageConfig{
+					ChatID:    int64(fromID),
+					MessageID: loadingMsg.MessageID,
+				}
+				if _, err := bot.DeleteMessage(deleteMsg); err != nil {
+					log.Printf("Failed to delete loading message %d: %v\n", loadingMsg.MessageID, err)
+				}
+
+				continue // skip further processing since we've handled the callback query
 			}
-
-			hostnamePart := parts[0]
-			ip := parts[1]
-			hostname := strings.TrimPrefix(hostnamePart, "Hostname: ")
-
-			fmt.Println("Sending toggleBlock request for hostname:", hostname, "ip:", ip)
-
-			// Call your toggleBlock function
-			err := toggleBlock(hostname, ip, serverIP, PHPSESSID, token)
-			if err != nil {
-				fmt.Println(err)
-				// send error message
-				msg := tgbotapi.NewMessage(int64(fromID), fmt.Sprintf("Error toggling block: %v", err))
-				bot.Send(msg)
-				continue
-			}
-
-			devices, err := parseStaticHosts("dhcpd.conf")
-			if err != nil {
-				msg := tgbotapi.NewMessage(int64(fromID), fmt.Sprintf("Error: %v", err))
-				bot.Send(msg)
-				continue
-			}
-
-			// Re-fetch devices or simply re-use if they are still valid
-			var rows [][]tgbotapi.InlineKeyboardButton
-			// sort devices by hostname
-			sort.Slice(devices, func(i, j int) bool {
-				return devices[i].Hostname < devices[j].Hostname
-			})
-			for _, device := range devices {
-				status := getBlockStatus(device.Hostname, device.IP, serverIP, PHPSESSID, token)
-				callbackData := fmt.Sprintf("Hostname: %s, IP: %s", device.Hostname, device.IP)
-				buttonText := fmt.Sprintf("%s (%s) - %s", device.Hostname, device.IP, status)
-				row := tgbotapi.NewInlineKeyboardRow(
-					tgbotapi.NewInlineKeyboardButtonData(buttonText, callbackData),
-				)
-				rows = append(rows, row)
-			}
-
-			// add a refresh button at the bottom
-			refreshButton := tgbotapi.NewInlineKeyboardButtonData("Refresh", "refresh")
-			rows = append(rows, tgbotapi.NewInlineKeyboardRow(refreshButton))
-
-			keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
-
-			// Update the message
-			editMsg := tgbotapi.NewEditMessageText(int64(fromID), update.CallbackQuery.Message.MessageID, "Select a client:")
-			editMsg.ReplyMarkup = &keyboard
-			bot.Send(editMsg)
-
-			continue // skip further processing since we've handled the callback query
 		}
 
 		if update.Message == nil { // ignore any non-Message and non-CallbackQuery updates
@@ -1055,6 +1090,15 @@ func main() {
 		if update.Message.IsCommand() {
 			switch update.Message.Command() {
 			case "getclients":
+
+				// send a loading message
+				loadMsg := tgbotapi.NewMessage(int64(fromID), "Loading clients...")
+				loadingMsg, processErr := bot.Send(loadMsg)
+				if processErr != nil {
+					log.Println("Failed to send loading message:", processErr)
+					continue
+				}
+
 				devices, err := parseStaticHosts("dhcpd.conf") // Your device parsing logic
 				if err != nil {
 					msg := tgbotapi.NewMessage(int64(fromID), fmt.Sprintf("Error: %v", err))
@@ -1111,6 +1155,10 @@ func main() {
 				refreshButton := tgbotapi.NewInlineKeyboardButtonData("Refresh", "refresh")
 				rows = append(rows, tgbotapi.NewInlineKeyboardRow(refreshButton))
 
+				// add a new button at the bottom
+				newButton := tgbotapi.NewInlineKeyboardButtonData("New", "new")
+				rows = append(rows, tgbotapi.NewInlineKeyboardRow(newButton))
+
 				keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
 				msg := tgbotapi.NewMessage(int64(fromID), "Select a client:")
 				msg.ReplyMarkup = keyboard
@@ -1118,6 +1166,15 @@ func main() {
 				if err != nil {
 					log.Println("Failed to send message:", err)
 					continue
+				}
+
+				// delete the loading message
+				deleteMsg := tgbotapi.DeleteMessageConfig{
+					ChatID:    int64(fromID),
+					MessageID: loadingMsg.MessageID,
+				}
+				if _, err := bot.DeleteMessage(deleteMsg); err != nil {
+					log.Printf("Failed to delete loading message %d: %v\n", loadingMsg.MessageID, err)
 				}
 
 				// Store new message ID
