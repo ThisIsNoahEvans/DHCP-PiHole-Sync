@@ -782,9 +782,12 @@ func sync(dhcpdConfPath, serverIP string, clientSync bool) (string, string, stri
 		return "", "", "", err
 	}
 
-	if clientSync {
+	if !clientSync {
+		fmt.Println("not syncing with DHCP")
 		return serverIP, PHPSESSID, token, nil
 	}
+
+	fmt.Println("syncing with DHCP")
 
 	devices, err := parseStaticHosts(dhcpdConfPath)
 	if err != nil {
