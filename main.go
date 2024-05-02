@@ -756,7 +756,8 @@ func findAllIPsInLeasesFile(filePath string) ([]IPAndMAC, error) {
 }
 
 // returns the server IP, PHPSESSID, and token
-func sync(dhcpdConfPath, serverIP string) (string, string, string, error) {
+// clientSync - just get auth, or sync with DHCP
+func sync(dhcpdConfPath, serverIP string, clientSync bool) (string, string, string, error) {
 
 	// Get the password from a file
 	passwordFile, err := os.Open("pihole-password.txt")
@@ -779,6 +780,10 @@ func sync(dhcpdConfPath, serverIP string) (string, string, string, error) {
 	if err != nil {
 		fmt.Println(err)
 		return "", "", "", err
+	}
+
+	if clientSync {
+		return serverIP, PHPSESSID, token, nil
 	}
 
 	devices, err := parseStaticHosts(dhcpdConfPath)
@@ -984,7 +989,7 @@ func main() {
 	serverIP = "10.45.1.2"
 
 	// sync once to get the initial values
-	serverIP, _, _, err = sync(dhcpdConfPath, serverIP)
+	serverIP, _, _, err = sync(dhcpdConfPath, serverIP, true)
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -1075,7 +1080,7 @@ func main() {
 					continue
 				}
 
-				serverIP, PHPSESSID, token, err = sync(dhcpdConfPath, serverIP)
+				serverIP, PHPSESSID, token, err = sync(dhcpdConfPath, serverIP, true) // refresh with DHCP
 				if err != nil {
 					fmt.Println(err)
 					msg := tgbotapi.NewMessage(int64(fromID), fmt.Sprintf("Error: %v", err))
@@ -1148,7 +1153,7 @@ func main() {
 				}
 
 				// re-sync
-				serverIP, PHPSESSID, token, err = sync(dhcpdConfPath, serverIP)
+				serverIP, PHPSESSID, token, err = sync(dhcpdConfPath, serverIP, false) // don't sync with DHCP, just re-auth
 				if err != nil {
 					fmt.Println(err)
 					msg := tgbotapi.NewMessage(int64(fromID), fmt.Sprintf("Error: %v", err))
@@ -1336,7 +1341,7 @@ func main() {
 				}
 
 				// re-sync
-				serverIP, PHPSESSID, token, err = sync(dhcpdConfPath, serverIP)
+				serverIP, PHPSESSID, token, err = sync(dhcpdConfPath, serverIP, true) // sync with DHCP
 				if err != nil {
 					fmt.Println(err)
 					msg := tgbotapi.NewMessage(int64(fromID), fmt.Sprintf("Error: %v", err))
