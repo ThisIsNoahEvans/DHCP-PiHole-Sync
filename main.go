@@ -979,9 +979,12 @@ func main() {
 
 	dhcpdConfPath := "dhcpd.conf"
 	dhcpdLeasesPath := "dhcpd.leases"
-	serverIP := "10.45.1.2"
+	var serverIP, PHPSESSID, token string
+	var err error
+	serverIP = "10.45.1.2"
 
-	serverIP, PHPSESSID, token, err := sync(dhcpdConfPath, serverIP)
+	// sync once to get the initial values
+	serverIP, _, _, err = sync(dhcpdConfPath, serverIP)
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -1072,11 +1075,12 @@ func main() {
 					continue
 				}
 
-				serverIP, PHPSESSID, token, err := sync(dhcpdConfPath, serverIP)
+				serverIP, PHPSESSID, token, err = sync(dhcpdConfPath, serverIP)
 				if err != nil {
+					fmt.Println(err)
 					msg := tgbotapi.NewMessage(int64(fromID), fmt.Sprintf("Error: %v", err))
 					bot.Send(msg)
-					continue
+					return
 				}
 
 				devices, err := parseStaticHosts(dhcpdConfPath)
@@ -1143,6 +1147,15 @@ func main() {
 					continue
 				}
 
+				// re-sync
+				serverIP, PHPSESSID, token, err = sync(dhcpdConfPath, serverIP)
+				if err != nil {
+					fmt.Println(err)
+					msg := tgbotapi.NewMessage(int64(fromID), fmt.Sprintf("Error: %v", err))
+					bot.Send(msg)
+					return
+				}
+
 				// Extracting hostname and IP using string manipulation
 				parts := strings.Split(callbackData, ", IP: ")
 				if len(parts) != 2 {
@@ -1157,11 +1170,11 @@ func main() {
 				fmt.Println("Sending toggleBlock request for hostname:", hostname, "ip:", ip)
 
 				// Call your toggleBlock function
-				err := toggleBlock(hostname, ip, serverIP, PHPSESSID, token)
-				if err != nil {
-					fmt.Println(err)
+				blockErr := toggleBlock(hostname, ip, serverIP, PHPSESSID, token)
+				if blockErr != nil {
+					fmt.Println(blockErr)
 					// send error message
-					msg := tgbotapi.NewMessage(int64(fromID), fmt.Sprintf("Error toggling block: %v", err))
+					msg := tgbotapi.NewMessage(int64(fromID), fmt.Sprintf("Error toggling block: %v", blockErr))
 					bot.Send(msg)
 					continue
 				}
@@ -1274,12 +1287,11 @@ func main() {
 				creatingNewClient = true
 			}
 		}
-		
 
 		if update.Message == nil { // ignore any non-Message and non-CallbackQuery updates
 			// if we're creating a new client, this will be the hostname
 			if creatingNewClient {
-			//	newClientHostname = update.Message.Text
+				//	newClientHostname = update.Message.Text
 
 				// get all categories
 				categories, err := findDHCPCategories(dhcpdConfPath)
@@ -1298,7 +1310,7 @@ func main() {
 					row := tgbotapi.NewInlineKeyboardRow(
 						tgbotapi.NewInlineKeyboardButtonData(buttonText, fmt.Sprintf("category %s", category)),
 					)
-					rows = append(rows, row)	
+					rows = append(rows, row)
 				}
 
 				keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
@@ -1321,6 +1333,15 @@ func main() {
 				if processErr != nil {
 					log.Println("Failed to send loading message:", processErr)
 					continue
+				}
+
+				// re-sync
+				serverIP, PHPSESSID, token, err = sync(dhcpdConfPath, serverIP)
+				if err != nil {
+					fmt.Println(err)
+					msg := tgbotapi.NewMessage(int64(fromID), fmt.Sprintf("Error: %v", err))
+					bot.Send(msg)
+					return
 				}
 
 				devices, err := parseStaticHosts(dhcpdConfPath)
