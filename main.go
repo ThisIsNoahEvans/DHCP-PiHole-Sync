@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"regexp"
@@ -19,7 +20,10 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 )
 
-// Device represents a DHCP static lease with a hostname and an IP address.
+type IPAndMAC struct {
+	IP  string
+	MAC string
+}
 type Device struct {
 	Hostname string
 	IP       string
@@ -459,6 +463,71 @@ func createStaticHost(hostname, currentIP, dhcpdConfPath, leasesPath, category s
 		return addErr
 	}
 
+	// remove the lease
+	removeErr := removeLease(macAddress, currentIP, leasesPath)
+	if removeErr != nil {
+		return removeErr
+	}
+
+	return nil
+}
+
+func removeLease(mac, ip, leasesPath string) error {
+	fmt.Println("Removing lease for", mac, ip)
+
+	// Open the original file for reading
+	file, err := os.Open(leasesPath)
+	if err != nil {
+		return fmt.Errorf("failed to open leases file: %v", err)
+	}
+	defer file.Close()
+
+	var buffer bytes.Buffer
+	var leaseBuffer bytes.Buffer
+	var inLeaseBlock bool
+
+	scanner := bufio.NewScanner(file)
+	// Scan each line in the file
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// Detect start of a lease block
+		if strings.HasPrefix(line, "lease") {
+			inLeaseBlock = true
+			leaseBuffer.WriteString(line + "\n")
+			continue
+		}
+
+		if inLeaseBlock {
+			leaseBuffer.WriteString(line + "\n") // Continue capturing the lease block
+			// Check if the end of a lease block
+			if strings.TrimSpace(line) == "}" {
+				if strings.Contains(leaseBuffer.String(), mac) || strings.Contains(leaseBuffer.String(), ip) {
+					fmt.Println("Found and deleting lease entry for", mac, ip)
+					// Clear leaseBuffer to not write this block back, effectively deleting it
+					leaseBuffer.Reset()
+				} else {
+					buffer.Write(leaseBuffer.Bytes()) // Write back non-matching lease block
+				}
+				inLeaseBlock = false // Reset the flag after processing a lease block
+				leaseBuffer.Reset()  // Clear the lease buffer after processing it
+			}
+		} else {
+			buffer.WriteString(line + "\n") // Write lines outside of lease blocks directly to the main buffer
+		}
+	}
+
+	// Check for scanning errors
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("error reading leases file: %v", err)
+	}
+
+	// Open the file for writing to overwrite with new data
+	err = os.WriteFile(leasesPath, buffer.Bytes(), 0644)
+	if err != nil {
+		return fmt.Errorf("failed to write to leases file: %v", err)
+	}
+
 	return nil
 }
 
@@ -631,8 +700,63 @@ func findMacAddress(ip, leasesPath string) (string, error) {
 	return "", fmt.Errorf("MAC address not found for IP %s", ip)
 }
 
+func findAllIPsInLeasesFile(filePath string) ([]IPAndMAC, error) {
+	// Open the file
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open leases file: %v", err)
+	}
+	defer file.Close()
+
+	var entries []IPAndMAC
+	scanner := bufio.NewScanner(file)
+
+	// Read file line by line
+	for scanner.Scan() {
+		line := scanner.Text()
+		// Check if the line starts with 'lease' to identify the beginning of a lease block
+		if strings.HasPrefix(line, "lease") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				ip := fields[1] // The second element should be the IP address
+				// Continue scanning until 'hardware ethernet' is found
+				for scanner.Scan() {
+					line := scanner.Text()
+					if strings.HasPrefix(line, "  hardware ethernet") {
+						fields = strings.Fields(line)
+						if len(fields) >= 3 {
+							mac := strings.TrimSuffix(fields[2], ";")
+							entries = append(entries, IPAndMAC{IP: ip, MAC: mac})
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("error reading leases file: %v", err)
+	}
+
+	// Sort the slice of IPAndMAC structs
+	sort.Slice(entries, func(i, j int) bool {
+		ipA, ipB := net.ParseIP(entries[i].IP), net.ParseIP(entries[j].IP)
+		if ipA == nil || ipB == nil {
+			return false // Handle parsing errors
+		}
+		ipA4, ipB4 := ipA.To4(), ipB.To4()
+		if ipA4 != nil && ipB4 != nil {
+			return bytes.Compare(ipA4, ipB4) < 0
+		}
+		return false // Handle non-IPv4 cases
+	})
+
+	return entries, nil
+}
+
 // returns the server IP, PHPSESSID, and token
-func sync() (string, string, string, error) {
+func sync(dhcpdConfPath, serverIP string) (string, string, string, error) {
 
 	// Get the password from a file
 	passwordFile, err := os.Open("pihole-password.txt")
@@ -651,16 +775,13 @@ func sync() (string, string, string, error) {
 		log.Panicf("Failed to read password: %v", err)
 	}
 
-	serverIP := "10.45.1.2"
-
 	PHPSESSID, token, err := authenticate(serverIP, password)
 	if err != nil {
 		fmt.Println(err)
 		return "", "", "", err
 	}
 
-	filePath := "dhcpd.conf"
-	devices, err := parseStaticHosts(filePath)
+	devices, err := parseStaticHosts(dhcpdConfPath)
 	if err != nil {
 		fmt.Println("Error:", err)
 		return "", "", "", err
@@ -855,7 +976,12 @@ func toggleBlock(hostname string, ip string, serverIP string, PHPSESSID string, 
 }
 
 func main() {
-	serverIP, PHPSESSID, token, err := sync()
+
+	dhcpdConfPath := "dhcpd.conf"
+	dhcpdLeasesPath := "dhcpd.leases"
+	serverIP := "10.45.1.2"
+
+	serverIP, PHPSESSID, token, err := sync(dhcpdConfPath, serverIP)
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -916,6 +1042,9 @@ func main() {
 		log.Panic(err)
 	}
 
+	var creatingNewClient bool
+	//var newClientHostname string
+
 	for update := range updates {
 
 		var fromID int
@@ -942,9 +1071,15 @@ func main() {
 					log.Println("Failed to send refresh message:", err)
 					continue
 				}
-				sync()
 
-				devices, err := parseStaticHosts("dhcpd.conf")
+				serverIP, PHPSESSID, token, err := sync(dhcpdConfPath, serverIP)
+				if err != nil {
+					msg := tgbotapi.NewMessage(int64(fromID), fmt.Sprintf("Error: %v", err))
+					bot.Send(msg)
+					continue
+				}
+
+				devices, err := parseStaticHosts(dhcpdConfPath)
 				if err != nil {
 					msg := tgbotapi.NewMessage(int64(fromID), fmt.Sprintf("Error: %v", err))
 					bot.Send(msg)
@@ -1031,7 +1166,7 @@ func main() {
 					continue
 				}
 
-				devices, err := parseStaticHosts("dhcpd.conf")
+				devices, err := parseStaticHosts(dhcpdConfPath)
 				if err != nil {
 					msg := tgbotapi.NewMessage(int64(fromID), fmt.Sprintf("Error: %v", err))
 					bot.Send(msg)
@@ -1080,10 +1215,99 @@ func main() {
 
 				continue // skip further processing since we've handled the callback query
 			}
+
+			// if it's a new client, get all the known IPs and send a menu
+			if update.CallbackQuery.Data == "new" {
+				fmt.Println("got new client callback")
+
+				// send a loading message
+				msg := tgbotapi.NewMessage(int64(fromID), "Loading clients...")
+				loadingMsg, processErr := bot.Send(msg)
+				if processErr != nil {
+					log.Println("Failed to send loading message:", processErr)
+					continue
+				}
+
+				// Get all the known IPs from the leases file
+				ips, err := findAllIPsInLeasesFile(dhcpdLeasesPath)
+				if err != nil {
+					msg := tgbotapi.NewMessage(int64(fromID), fmt.Sprintf("Error: %v", err))
+					bot.Send(msg)
+					continue
+				}
+
+				// Prepare new keyboard with all the IPs and MAC addresses
+				var rows [][]tgbotapi.InlineKeyboardButton
+				for _, entry := range ips {
+					buttonText := fmt.Sprintf("New client for %s (%s)", entry.IP, entry.MAC)
+					row := tgbotapi.NewInlineKeyboardRow(
+						tgbotapi.NewInlineKeyboardButtonData(buttonText, "createNew"),
+					)
+					rows = append(rows, row)
+				}
+
+				keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
+				msg = tgbotapi.NewMessage(int64(fromID), "Select a client:")
+				msg.ReplyMarkup = keyboard
+				bot.Send(msg)
+
+				// delete the loading message
+				deleteMsg := tgbotapi.DeleteMessageConfig{
+					ChatID:    int64(fromID),
+					MessageID: loadingMsg.MessageID,
+				}
+				if _, err := bot.DeleteMessage(deleteMsg); err != nil {
+					log.Printf("Failed to delete loading message %d: %v\n", loadingMsg.MessageID, err)
+				}
+
+				continue // skip further processing since we've handled the callback query
+			}
+
+			// if it's a createNew client, ask for a hostname
+			if update.CallbackQuery.Data == "createNew" {
+				fmt.Println("got createNew callback")
+
+				// ask for a hostname
+				msg := tgbotapi.NewMessage(int64(fromID), "Please enter a hostname for the new client:")
+				bot.Send(msg)
+
+				creatingNewClient = true
+			}
 		}
+		
 
 		if update.Message == nil { // ignore any non-Message and non-CallbackQuery updates
-			continue
+			// if we're creating a new client, this will be the hostname
+			if creatingNewClient {
+			//	newClientHostname = update.Message.Text
+
+				// get all categories
+				categories, err := findDHCPCategories(dhcpdConfPath)
+				if err != nil {
+					msg := tgbotapi.NewMessage(int64(fromID), fmt.Sprintf("Error: %v", err))
+					bot.Send(msg)
+					continue
+				}
+
+				// send categories as a menu
+				var rows [][]tgbotapi.InlineKeyboardButton
+				// Print each category and its range
+				for category, rangeArr := range categories {
+					fmt.Printf("Category: %s, Range: %d - %d\n", category, rangeArr[0], rangeArr[1])
+					buttonText := fmt.Sprintf("%s (%d - %d)", category, rangeArr[0], rangeArr[1])
+					row := tgbotapi.NewInlineKeyboardRow(
+						tgbotapi.NewInlineKeyboardButtonData(buttonText, fmt.Sprintf("category %s", category)),
+					)
+					rows = append(rows, row)	
+				}
+
+				keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
+				msg := tgbotapi.NewMessage(int64(fromID), "Select a category:")
+				msg.ReplyMarkup = keyboard
+				bot.Send(msg)
+
+				continue // skip further processing since we've handled the message
+			}
 		}
 
 		// Handle commands
@@ -1099,7 +1323,7 @@ func main() {
 					continue
 				}
 
-				devices, err := parseStaticHosts("dhcpd.conf") // Your device parsing logic
+				devices, err := parseStaticHosts(dhcpdConfPath)
 				if err != nil {
 					msg := tgbotapi.NewMessage(int64(fromID), fmt.Sprintf("Error: %v", err))
 					bot.Send(msg)
